@@ -61,8 +61,15 @@ Generate activity suggestions for the free gaps in my schedule tomorrow.
 - {start_time}-{end_time}: {title} ({category}) at {location}
 {end for}
 
-## Free Gaps (suggest activities for these)
-{for each gap}
+## Recurring Goals Already Scheduled Tomorrow
+{for each scheduled goal instance}
+- {start_time}-{end_time}: {goal_label} ({category}, {energy_level} energy)
+{end for}
+Note: These are already on the calendar. Suggest activities that complement them —
+don't duplicate the category unless the gaps are far apart.
+
+## Free Gaps (suggest activities for these — AFTER goals are placed)
+{for each remaining gap}
 - Gap {n}: {start_time}-{end_time} ({duration_minutes} min)
   - Time of day: {time_of_day}
   - Before: {before_event_title}

@@ -11,8 +11,9 @@ DriftCal uses an in-process cron scheduler ([robfig/cron](https://github.com/rob
 | **Calendar Sync** | Every 15 min | Poll Nylas for event changes (webhook fallback) |
 | **Gap Detection** | 06:00 daily | Compute free gaps for the next 3 days |
 | **Context Enrichment** | 06:05 daily | Fetch weather forecast and local events for tomorrow |
-| **Suggestion Generation** | 06:15 daily | Batch Claude API call to generate activity suggestions |
-| **Morning Digest** | 07:30 daily (configurable) | Send Telegram message with tomorrow's suggestions |
+| **Goal Scheduling** | 06:10 daily | Place recurring goals into optimal free gaps |
+| **Suggestion Generation** | 06:15 daily | Batch Claude API call for remaining gaps after goals |
+| **Morning Digest** | 07:30 daily (configurable) | Send Telegram message with goals + suggestions |
 | **Expire Stale** | 00:00 daily | Mark past pending suggestions as expired |
 
 All times are in the user's configured timezone (`preferences.timezone`).
@@ -70,10 +71,37 @@ Retry:    1 retry with 10s delay
 4. (Phase 2) Call Google Places API for trending/seasonal nearby activities
 5. Cache enrichment data for use in suggestion generation
 
+### Goal Scheduling
+
+```
+Schedule: 0 6 10 * * *  (5 minutes after enrichment)
+Timeout:  30 seconds
+Retry:    No (can be triggered manually via /goals command)
+```
+
+**What it does:**
+1. Load all active `RecurringGoal` entries
+2. For each goal, check weekly fulfillment: count `GoalInstance` records for current week with status `scheduled` or `completed`
+3. For unfulfilled goals (remaining count > 0), sorted by priority descending:
+   a. Generate candidate slots from available gaps (after calendar events + protected blocks)
+   b. Filter by goal constraints: `allowed_days`, `earliest_hour`–`latest_hour`, `duration_minutes` fits
+   c. Score each candidate slot:
+      - Time-of-day preference match (weight 2.0)
+      - Energy level match against user's energy profile (weight 1.5)
+      - Spacing from last instance of this goal (weight 1.5)
+      - Gap utilization — prefer gaps where goal leaves ≥30 min remaining (weight 0.8)
+   d. Assign to highest-scoring slot
+   e. Create `GoalInstance` record with status `scheduled`
+   f. Create calendar event via Nylas API
+   g. Remove occupied time from available gaps (so next goal/suggestion doesn't overlap)
+4. Pass remaining available gaps to the suggestion generation job
+
+**Rescheduling behavior:** When a user skips a goal instance via Telegram, this logic re-runs for just that goal to find the next available slot in the remaining week.
+
 ### Suggestion Generation
 
 ```
-Schedule: 0 6 15 * * *  (10 minutes after enrichment)
+Schedule: 0 6 15 * * *  (5 minutes after goal scheduling)
 Timeout:  60 seconds
 Retry:    1 retry with lower temperature (0.5 instead of 0.9)
 ```

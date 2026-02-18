@@ -82,6 +82,26 @@
 │ created_at           │
 │ updated_at           │
 └──────────────────────┘
+
+┌──────────────────────────┐       ┌──────────────────────────┐
+│ RecurringGoal             │       │ GoalInstance              │
+│──────────────────────────│       │──────────────────────────│
+│ id (PK)                  │──────►│ id (PK)                  │
+│ label                    │       │ goal_id (FK)             │
+│ category                 │       │ week_start               │ (ISO week boundary)
+│ duration_minutes         │       │ scheduled_start          │
+│ times_per_week           │       │ scheduled_end            │
+│ preferred_time_of_day    │       │ status                   │ (scheduled, completed, skipped, rescheduled)
+│ energy_level             │       │ nylas_event_id           │ (links to created calendar event)
+│ earliest_hour            │       │ created_at               │
+│ latest_hour              │       │ updated_at               │
+│ allowed_days             │       └──────────────────────────┘
+│ min_gap_between_hours    │
+│ is_active                │
+│ priority                 │  (1-5, higher = schedule first)
+│ created_at               │
+│ updated_at               │
+└──────────────────────────┘
 ```
 
 ## Table Details
@@ -234,6 +254,57 @@ CREATE TABLE user_preferences (
 | `suggestion_count` | `3` | Number of suggestions per digest |
 | `min_gap_minutes` | `45` | Minimum free gap to suggest activities for |
 
+### RecurringGoal
+
+Flexible recurring activities the user wants scheduled automatically (e.g., "study 2x/week for 1hr"). The system finds optimal slots in free gaps and schedules them. Goals have higher scheduling priority than activity suggestions but lower than real calendar events and protected blocks.
+
+```sql
+CREATE TABLE recurring_goals (
+    id                     INTEGER PRIMARY KEY AUTOINCREMENT,
+    label                  TEXT NOT NULL,
+    category               TEXT NOT NULL
+                           CHECK (category IN ('study', 'workout', 'creative', 'social',
+                                               'errand', 'health', 'hobby', 'other')),
+    duration_minutes       INTEGER NOT NULL CHECK (duration_minutes >= 15),
+    times_per_week         INTEGER NOT NULL CHECK (times_per_week >= 1 AND times_per_week <= 14),
+    preferred_time_of_day  TEXT DEFAULT 'any'
+                           CHECK (preferred_time_of_day IN ('any', 'morning', 'afternoon', 'evening')),
+    energy_level           TEXT NOT NULL DEFAULT 'medium'
+                           CHECK (energy_level IN ('low', 'medium', 'high')),
+    earliest_hour          TEXT NOT NULL DEFAULT '07:00',
+    latest_hour            TEXT NOT NULL DEFAULT '22:00',
+    allowed_days           TEXT,  -- JSON array e.g. ["mon","tue","wed","thu","fri"], null = any day
+    min_gap_between_hours  INTEGER NOT NULL DEFAULT 24,  -- minimum hours between instances
+    is_active              BOOLEAN NOT NULL DEFAULT 1,
+    priority               INTEGER NOT NULL DEFAULT 3 CHECK (priority BETWEEN 1 AND 5),
+    created_at             DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at             DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+```
+
+### GoalInstance
+
+Tracks individual scheduled instances of recurring goals per week. Enables the system to know how many times a goal has been fulfilled this week and whether rescheduling is needed.
+
+```sql
+CREATE TABLE goal_instances (
+    id               INTEGER PRIMARY KEY AUTOINCREMENT,
+    goal_id          INTEGER NOT NULL REFERENCES recurring_goals(id) ON DELETE CASCADE,
+    week_start       DATE NOT NULL,  -- Monday of the ISO week
+    scheduled_start  DATETIME NOT NULL,
+    scheduled_end    DATETIME NOT NULL,
+    status           TEXT NOT NULL DEFAULT 'scheduled'
+                     CHECK (status IN ('scheduled', 'completed', 'skipped', 'rescheduled')),
+    nylas_event_id   TEXT,  -- populated when pushed to calendar
+    created_at       DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at       DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE INDEX idx_goal_instances_goal ON goal_instances(goal_id);
+CREATE INDEX idx_goal_instances_week ON goal_instances(week_start, goal_id);
+CREATE INDEX idx_goal_instances_time ON goal_instances(scheduled_start, scheduled_end);
+```
+
 ### ProtectedBlock
 
 Recurring time blocks that should never receive suggestions (intentional free time, family time, etc.).
@@ -279,4 +350,28 @@ LIMIT @limit;
 SELECT * FROM protected_blocks
 WHERE is_active = 1
   AND (day_of_week IS NULL OR day_of_week = @day_of_week);
+
+-- name: GetActiveRecurringGoals :many
+SELECT * FROM recurring_goals
+WHERE is_active = 1
+ORDER BY priority DESC, id;
+
+-- name: GetGoalInstancesForWeek :many
+SELECT gi.*, rg.label, rg.times_per_week
+FROM goal_instances gi
+JOIN recurring_goals rg ON gi.goal_id = rg.id
+WHERE gi.week_start = @week_start
+ORDER BY gi.scheduled_start;
+
+-- name: GetUnfulfilledGoalsForWeek :many
+SELECT rg.*,
+       rg.times_per_week - COUNT(gi.id) AS remaining_count
+FROM recurring_goals rg
+LEFT JOIN goal_instances gi ON rg.id = gi.goal_id
+  AND gi.week_start = @week_start
+  AND gi.status IN ('scheduled', 'completed')
+WHERE rg.is_active = 1
+GROUP BY rg.id
+HAVING remaining_count > 0
+ORDER BY rg.priority DESC, remaining_count DESC;
 ```

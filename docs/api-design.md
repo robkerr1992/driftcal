@@ -307,6 +307,132 @@ Update one or more preferences.
 
 ---
 
+### Recurring Goals
+
+#### `GET /api/goals`
+
+List all recurring goals.
+
+**Response** `200 OK`
+```json
+{
+  "goals": [
+    {
+      "id": 1,
+      "label": "Study session",
+      "category": "study",
+      "duration_minutes": 60,
+      "times_per_week": 2,
+      "preferred_time_of_day": "any",
+      "energy_level": "medium",
+      "earliest_hour": "08:00",
+      "latest_hour": "20:00",
+      "allowed_days": ["mon", "tue", "wed", "thu", "fri"],
+      "min_gap_between_hours": 24,
+      "is_active": true,
+      "priority": 3,
+      "this_week": {
+        "scheduled": 1,
+        "completed": 0,
+        "remaining": 1
+      }
+    }
+  ]
+}
+```
+
+#### `POST /api/goals`
+
+Create a new recurring goal.
+
+**Request**
+```json
+{
+  "label": "Study session",
+  "category": "study",
+  "duration_minutes": 60,
+  "times_per_week": 2,
+  "preferred_time_of_day": "any",
+  "energy_level": "medium",
+  "earliest_hour": "08:00",
+  "latest_hour": "20:00",
+  "allowed_days": ["mon", "tue", "wed", "thu", "fri"],
+  "min_gap_between_hours": 24,
+  "priority": 3
+}
+```
+
+**Response** `201 Created`
+
+#### `PATCH /api/goals/:id`
+
+Update a recurring goal.
+
+**Request**
+```json
+{
+  "times_per_week": 3,
+  "priority": 4
+}
+```
+
+**Response** `200 OK`
+
+#### `DELETE /api/goals/:id`
+
+Deactivate a recurring goal (soft delete — sets `is_active = false`).
+
+**Response** `204 No Content`
+
+#### `GET /api/goals/:id/instances`
+
+List scheduled instances of a goal.
+
+**Query Parameters**
+| Param | Type | Required | Description |
+|-------|------|----------|-------------|
+| `week_start` | YYYY-MM-DD | No | Filter by week (defaults to current week) |
+
+**Response** `200 OK`
+```json
+{
+  "instances": [
+    {
+      "id": 1,
+      "goal_id": 1,
+      "week_start": "2026-02-16",
+      "scheduled_start": "2026-02-18T10:00:00-05:00",
+      "scheduled_end": "2026-02-18T11:00:00-05:00",
+      "status": "scheduled",
+      "nylas_event_id": "abc123"
+    }
+  ]
+}
+```
+
+#### `POST /api/goals/:id/instances/:instance_id/skip`
+
+Skip a scheduled goal instance. The system will attempt to reschedule it later in the week.
+
+**Response** `200 OK`
+```json
+{
+  "instance": { "...updated instance with status: skipped..." },
+  "rescheduled": {
+    "scheduled_start": "2026-02-20T14:00:00-05:00",
+    "scheduled_end": "2026-02-20T15:00:00-05:00"
+  }
+}
+```
+
+#### `POST /api/goals/:id/instances/:instance_id/complete`
+
+Mark a goal instance as completed.
+
+**Response** `200 OK`
+
+---
+
 ### Protected Blocks
 
 #### `GET /api/protected-blocks`
@@ -381,7 +507,7 @@ Receives Telegram bot updates (callback queries from inline keyboards).
 **Validation**: `X-Telegram-Bot-Api-Secret-Token` header matches configured secret.
 
 **Handled update types**:
-- `callback_query` with data: `approve:<id>`, `reject:<id>`, `edit:<id>`
+- `callback_query` with data: `approve:s:<id>`, `reject:s:<id>`, `edit:s:<id>`, `reschedule:g:<id>`, `skip:g:<id>`, `complete:g:<id>`
 
 ---
 

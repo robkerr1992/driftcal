@@ -21,6 +21,8 @@ The Telegram bot is DriftCal's primary interface for MVP. It delivers daily dige
 | `/tomorrow` | Show tomorrow's suggestions |
 | `/regenerate` | Generate new suggestions for tomorrow (replaces existing) |
 | `/gaps` | Show free gaps for the next 3 days |
+| `/goals` | List active recurring goals with this week's progress |
+| `/addgoal` | Create a new recurring goal (guided flow) |
 | `/preferences` | Show current preferences |
 | `/block` | Add a protected time block |
 | `/unblock` | Remove a protected time block |
@@ -34,11 +36,22 @@ Sent at the configured `digest_time` (default 7:30 AM):
 ```
 ☀️ Tomorrow — Wednesday, Feb 19
 
-Your schedule has 3 free windows. Here are some ideas:
+📋 SCHEDULED GOALS (auto-placed)
 
 ━━━━━━━━━━━━━━━━━━━━━
 
-11:00–12:15 · Walk to Dupont Farmers Market
+10:00–11:00 · 📖 Study session (1 of 2 this week)
+Placed in your morning gap — your peak focus hours.
+
+[🔄 Reschedule]  [⏭ Skip]
+
+━━━━━━━━━━━━━━━━━━━━━
+
+💡 ACTIVITY IDEAS (for your remaining gaps)
+
+━━━━━━━━━━━━━━━━━━━━━
+
+11:15–12:15 · Walk to Dupont Farmers Market
 It's 52°F and sunny. Pick up something for dinner.
 📍 Dupont Circle  ·  💪 Medium  ·  💰 $
 
@@ -71,10 +84,17 @@ Each suggestion gets its own message with an inline keyboard:
 └──────────┴──────────┴──────────┘
 ```
 
-Callback data format: `{action}:{suggestion_id}`
-- `approve:15`
-- `reject:15`
-- `edit:15`
+Callback data format: `{action}:{type}:{id}`
+
+**Suggestion callbacks:**
+- `approve:s:15`
+- `reject:s:15`
+- `edit:s:15`
+
+**Goal instance callbacks:**
+- `reschedule:g:7`
+- `skip:g:7`
+- `complete:g:7`
 
 ## Callback Flows
 
@@ -113,6 +133,45 @@ Append: "❌ Skipped"
 Remove keyboard
 ```
 
+### Goal Reschedule Flow
+
+```
+User taps [🔄 Reschedule]
+    │
+    ▼
+Find next available slot this week that fits the goal
+    │
+    ├── Slot found:
+    │     Update GoalInstance scheduled_start/end
+    │     Update Nylas event
+    │     Edit message: "🔄 Rescheduled to Thursday 14:00–15:00"
+    │     Show new keyboard: [🔄 Reschedule]  [⏭ Skip]
+    │
+    └── No slot available:
+          Reply: "No slots left this week for this goal.
+                  Want to skip it?"
+          [⏭ Skip this week]  [🔙 Keep as is]
+```
+
+### Goal Skip Flow
+
+```
+User taps [⏭ Skip]
+    │
+    ▼
+Update GoalInstance status → "skipped"
+Delete Nylas event
+    │
+    ▼
+Attempt to reschedule later in the week
+    │
+    ├── Rescheduled:
+    │     Edit message: "⏭ Skipped. Rescheduled to Friday 10:00–11:00"
+    │
+    └── No slots left:
+          Edit message: "⏭ Skipped. No more slots this week (1 of 2 completed)."
+```
+
 ### Edit Flow (Phase 2)
 
 ```
@@ -145,6 +204,50 @@ Google (user@gmail.com)
 
 Outlook (user@company.com)
   ✅ Calendar — 67 events synced, last sync 12 min ago
+```
+
+### Goals Overview (`/goals`)
+
+```
+📋 Your Recurring Goals
+
+📖 Study session — 2x/week, 60 min
+   This week: ✅ 1 done · 📅 1 scheduled · 0 remaining
+   Next: Thursday 14:00–15:00
+
+🏋️ Gym workout — 3x/week, 90 min
+   This week: ✅ 2 done · 📅 1 scheduled · 0 remaining
+   Next: Friday 07:00–08:30
+
+🎸 Guitar practice — 1x/week, 45 min
+   This week: ⏳ 0 done · 📅 0 scheduled · 1 remaining
+   ⚠️ Not yet scheduled — no matching gaps found
+
+[➕ Add Goal]  [⚙️ Edit Goals]
+```
+
+### Add Goal (`/addgoal`) — Guided Flow
+
+```
+User sends: /addgoal
+
+Bot: "What do you want to schedule?"
+User: "Study session"
+
+Bot: "How long should each session be?"
+[30 min]  [45 min]  [60 min]  [90 min]
+
+Bot: "How many times per week?"
+[1x]  [2x]  [3x]  [4x]  [5x]
+
+Bot: "Any time preference?"
+[Any time]  [Morning]  [Afternoon]  [Evening]
+
+Bot: "Which days?"
+[Weekdays]  [Weekends]  [Any day]
+
+Bot: "✅ Created: Study session — 2x/week, 60 min, any time, weekdays
+      I'll start scheduling this into your free gaps."
 ```
 
 ### Gap Report (`/gaps`)

@@ -10,29 +10,31 @@ DriftCal is a single Go binary that orchestrates calendar data from multiple pro
 ┌──────────────────────────────────────────────────────────────────┐
 │                        Go Backend                                 │
 │                                                                   │
-│  ┌──────────────┐   ┌──────────────┐   ┌─────────────────────┐  │
-│  │ Calendar Sync │   │ Gap Detection│   │ Activity Suggestion │  │
-│  │   Service     │──►│   Engine     │──►│    Engine            │  │
-│  │              │   │              │   │                     │  │
-│  │ - Nylas SDK  │   │ - Merge busy │   │ - Claude API        │  │
-│  │ - Webhooks   │   │   blocks     │   │ - Weather API       │  │
-│  │ - Polling    │   │ - Find gaps  │   │ - Places API        │  │
-│  │   fallback   │   │   ≥45 min    │   │ - Events API        │  │
-│  │ - Event      │   │ - Tag time   │   │ - Interest matching │  │
-│  │   normalize  │   │   of day     │   │ - Dedup history     │  │
-│  └──────┬───────┘   └──────────────┘   └──────────┬──────────┘  │
-│         │                                          │              │
-│  ┌──────▼───────┐   ┌──────────────┐   ┌──────────▼──────────┐  │
-│  │   Event      │   │    User      │   │   Notification      │  │
-│  │   Store      │   │  Preferences │   │     Service         │  │
-│  │              │   │   Service    │   │                     │  │
-│  │ - CRUD ops   │   │              │   │ - Telegram Bot API  │  │
-│  │ - Conflict   │   │ - Active hrs │   │ - Inline keyboards  │  │
-│  │   detection  │   │ - Interests  │   │ - Callback handling │  │
-│  │ - History    │   │ - Energy     │   │ - Event creation    │  │
-│  └──────────────┘   │   profile    │   └─────────────────────┘  │
+│  ┌──────────────┐   ┌──────────────┐   ┌──────────────┐   ┌─────────────────────┐  │
+│  │ Calendar Sync │   │ Gap Detection│   │    Goal      │   │ Activity Suggestion │  │
+│  │   Service     │──►│   Engine     │──►│  Scheduler   │──►│    Engine            │  │
+│  │              │   │              │   │              │   │                     │  │
+│  │ - Nylas SDK  │   │ - Merge busy │   │ - Score slots│   │ - Claude API        │  │
+│  │ - Webhooks   │   │   blocks     │   │ - Place goals│   │ - Weather API       │  │
+│  │ - Polling    │   │ - Find gaps  │   │ - Track week │   │ - Places API        │  │
+│  │   fallback   │   │   ≥45 min    │   │   fulfillment│   │ - Events API        │  │
+│  │ - Event      │   │ - Tag time   │   │ - Respect    │   │ - Interest matching │  │
+│  │   normalize  │   │   of day     │   │   spacing    │   │ - Dedup history     │  │
+│  └──────┬───────┘   └──────────────┘   └──────────────┘   └──────────┬──────────┘  │
+│         │                                                             │              │
+│  ┌──────▼───────┐   ┌──────────────┐   ┌─────────────────────────────▼──────────┐  │
+│  │   Event      │   │    User      │   │          Notification                   │  │
+│  │   Store      │   │  Preferences │   │            Service                      │  │
+│  │              │   │   Service    │   │                                         │  │
+│  │ - CRUD ops   │   │              │   │ - Telegram Bot API                      │  │
+│  │ - Conflict   │   │ - Active hrs │   │ - Goal instances (Reschedule/Skip)      │  │
+│  │   detection  │   │ - Interests  │   │ - Activity suggestions (Approve/Reject) │  │
+│  │ - History    │   │ - Energy     │   │ - Callback handling + event creation    │  │
+│  └──────────────┘   │   profile    │   └─────────────────────────────────────────┘  │
 │                     │ - Protected  │                              │
 │                     │   blocks     │                              │
+│                     │ - Recurring  │                              │
+│                     │   goals      │                              │
 │                     └──────────────┘                              │
 │                                                                   │
 │  ┌──────────────────────────────────────────────────────────────┐│
@@ -94,8 +96,27 @@ Every 15 minutes, a polling job runs as a fallback to catch any missed webhooks.
               - Nearby places (Google Places API, Phase 2)
                     │
                     ▼
-06:15 ────►   Batch all gaps into single Claude API call
-              Include: user profile, weather, recent history
+06:10 ────►   GOAL SCHEDULING (new step — runs before activity suggestions)
+              1. Load active RecurringGoals
+              2. Check fulfillment: how many times each goal
+                 has been scheduled/completed this week
+              3. For unfulfilled goals, score candidate slots:
+                 - Time-of-day preference match (weight 2.0)
+                 - Energy level match (weight 1.5)
+                 - Allowed day match (weight 1.0)
+                 - Spacing from last instance (weight 1.5)
+                 - Gap duration fit — prefer gaps where goal
+                   leaves ≥30 min remaining (weight 0.8)
+              4. Assign goals to highest-scoring slots
+                 (higher priority goals placed first)
+              5. Create GoalInstance records with status "scheduled"
+              6. Push goal events to calendar via Nylas
+              7. Remove goal-occupied time from available gaps
+                    │
+                    ▼
+06:15 ────►   Batch REMAINING gaps into single Claude API call
+              Include: user profile, weather, recent history,
+              and scheduled goals as context
                     │
                     ▼
               Parse structured JSON response
@@ -103,6 +124,8 @@ Every 15 minutes, a polling job runs as a fallback to catch any missed webhooks.
                     │
                     ▼
 07:30 ────►   Format Telegram message with inline keyboards
+              SECTION 1: Scheduled goals (Reschedule/Skip buttons)
+              SECTION 2: Activity suggestions (Approve/Reject buttons)
               Send to user's Telegram chat
 ```
 

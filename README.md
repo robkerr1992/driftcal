@@ -10,9 +10,10 @@ Your calendar shows meetings, workouts, and obligations — but the gaps between
 
 1. **Aggregates all your calendars** — Google, Outlook, iCloud — into one unified view via Nylas
 2. **Detects free gaps** in your schedule, respecting your active hours and energy patterns
-3. **Generates creative activity suggestions** using Claude, enriched with weather, local events, and your interests
-4. **Delivers a daily digest** via Telegram with approve/reject buttons
-5. **Pushes approved activities** back to your calendar automatically
+3. **Auto-schedules recurring goals** — "study 2x/week for 1hr" gets placed into optimal slots automatically
+4. **Generates creative activity suggestions** using Claude for remaining gaps, enriched with weather, local events, and your interests
+5. **Delivers a daily digest** via Telegram — scheduled goals (reschedule/skip) + activity ideas (approve/reject)
+6. **Pushes everything** back to your calendar automatically
 
 ## Example Daily Digest
 
@@ -44,11 +45,11 @@ Low energy evening. That pu-erh sampler is still unopened.
 ┌─────────────────────────────────────────────────────────┐
 │               Go Backend (single binary)                 │
 │                                                          │
-│  Calendar Sync ──► Gap Detection ──► Activity Suggestion │
-│  (Nylas API)       Engine            Engine (Claude)      │
-│                                          │               │
-│  User Prefs ◄──── Notification ◄────────┘               │
-│  Service           Service (Telegram)                    │
+│  Calendar Sync ─► Gap Detection ─► Goal Scheduler ─► Activity Suggestion │
+│  (Nylas API)      Engine           Engine            Engine (Claude)      │
+│                                                          │               │
+│  User Prefs ◄──────── Notification ◄────────────────────┘               │
+│  Service               Service (Telegram)                                │
 └────┬──────────┬──────────┬──────────────┬───────────────┘
      │          │          │              │
    SQLite    Nylas     Claude API    External APIs

@@ -26,22 +26,35 @@ The goal is a working end-to-end loop: calendars sync, gaps are found, Claude su
 - [ ] Tag gaps with time-of-day, duration, adjacent events
 - [ ] Verify: `/gaps` returns correct free windows
 
-### Milestone 1.4: Suggestion Engine
+### Milestone 1.4: Goal Scheduling
+- [ ] RecurringGoal and GoalInstance database tables + sqlc queries
+- [ ] Goal CRUD via API (`/api/goals`)
+- [ ] Goal scheduling engine: score candidate slots, place goals into gaps
+- [ ] Slot scoring: time-of-day preference, energy match, allowed days, spacing, gap fit
+- [ ] Weekly fulfillment tracking (how many times scheduled/completed this week)
+- [ ] Push scheduled goals to calendar via Nylas
+- [ ] Skip/reschedule flow: find next available slot when user skips
+- [ ] Telegram `/goals` command to view active goals + this week's progress
+- [ ] Telegram `/addgoal` guided creation flow
+- [ ] Verify: goals are auto-placed into optimal gaps before activity suggestions run
+
+### Milestone 1.5: Suggestion Engine
 - [ ] Implement Claude API client with structured JSON output
 - [ ] Build prompt template with user profile, weather, schedule, history
 - [ ] Integrate OpenWeather API for next-day forecast
 - [ ] Parse and store suggestions in database
-- [ ] Verify: suggestions make sense for the detected gaps
+- [ ] Include scheduled goals as context in LLM prompt (so suggestions complement goals)
+- [ ] Verify: suggestions fill gaps that remain after goal scheduling
 
-### Milestone 1.5: Telegram Bot
+### Milestone 1.6: Telegram Bot
 - [ ] Create bot via BotFather, configure webhook
-- [ ] Implement `/start`, `/today`, `/tomorrow`, `/gaps`, `/status`, `/help`
-- [ ] Daily digest message formatting with inline keyboards
-- [ ] Approve callback → create Nylas event → confirm to user
-- [ ] Reject callback → update status, record feedback
-- [ ] Verify: full loop works end-to-end
+- [ ] Implement `/start`, `/today`, `/tomorrow`, `/gaps`, `/goals`, `/addgoal`, `/status`, `/help`
+- [ ] Daily digest with two sections: scheduled goals + activity suggestions
+- [ ] Goal callbacks: Reschedule → find new slot, Skip → attempt reschedule
+- [ ] Suggestion callbacks: Approve → create Nylas event, Reject → record feedback
+- [ ] Verify: full loop works end-to-end (goals scheduled, suggestions for remaining gaps)
 
-### Milestone 1.6: Cron & Deployment
+### Milestone 1.7: Cron & Deployment
 - [ ] Set up in-process cron scheduler (robfig/cron)
 - [ ] Wire all scheduled jobs (sync, gaps, enrich, suggest, digest, expire)
 - [ ] Deploy to VPS with Caddy reverse proxy
@@ -52,8 +65,10 @@ The goal is a working end-to-end loop: calendars sync, gaps are found, Claude su
 ### MVP Definition of Done
 - Google Calendar events sync reliably
 - Free gaps are computed correctly
-- Claude generates relevant, specific activity suggestions
-- Telegram digest arrives daily at configured time
+- Recurring goals are auto-scheduled into optimal gaps with weekly fulfillment tracking
+- Goals can be skipped/rescheduled via Telegram
+- Claude generates relevant, specific activity suggestions for remaining gaps
+- Telegram digest arrives daily with goals section + activity suggestions section
 - Approve pushes event to calendar, Reject records feedback
 - System runs unattended on a VPS
 
@@ -147,7 +162,7 @@ Use the MVP daily. Observe what's missing, what's annoying, what's delightful. T
 Things DriftCal will **not** do:
 
 - **Replace your calendar app** — it reads and writes events, but you manage your calendar in Google/Outlook/Apple as usual
-- **Schedule work tasks** — Motion/Reclaim handle that. DriftCal is for life outside of work
+- **Be a full task manager** — it schedules recurring goals, not one-off tasks. Use Motion/Todoist for that
 - **Social coordination** — no group scheduling, no availability sharing
-- **Habit tracking** — light nudges only, not a full habit tracker
+- **Full habit tracker** — it schedules recurring goals and tracks weekly fulfillment, but it's not a replacement for dedicated habit trackers with streaks, analytics, etc.
 - **Booking/purchasing** — it suggests, you decide and act
