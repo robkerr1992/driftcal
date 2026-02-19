@@ -11,7 +11,42 @@ DriftCal makes **one Claude API call per day** containing all of tomorrow's free
 | Model | `claude-sonnet-4-6` | Good balance of quality and cost for structured output |
 | Temperature | 0.9 | High creativity for varied suggestions |
 | Max tokens | 2000 | Sufficient for 3-5 structured suggestions |
-| Response format | JSON | Structured output for reliable parsing |
+| Response format | **Tool use (structured output)** | Schema-enforced JSON via `suggest_activities` tool definition |
+
+### Why Tool Use Over Raw JSON Prompting
+
+The suggestion engine uses Claude's **tool use / structured output** feature with a defined `suggest_activities` schema rather than asking for raw JSON in the prompt. This nearly eliminates JSON parsing failures, which are the primary failure mode of unstructured LLM output.
+
+```json
+{
+  "name": "suggest_activities",
+  "description": "Generate activity suggestions for free calendar gaps",
+  "input_schema": {
+    "type": "object",
+    "properties": {
+      "suggestions": {
+        "type": "array",
+        "items": {
+          "type": "object",
+          "properties": {
+            "gap_number": { "type": "integer" },
+            "title": { "type": "string" },
+            "description": { "type": "string" },
+            "category": { "type": "string", "enum": ["outdoor", "cultural", "social", "fitness", "creative", "culinary", "relaxation"] },
+            "energy_level": { "type": "string", "enum": ["low", "medium", "high"] },
+            "estimated_cost": { "type": "string", "enum": ["free", "$", "$$", "$$$"] },
+            "location": { "type": "string" },
+            "location_url": { "type": ["string", "null"] },
+            "reasoning": { "type": "string" }
+          },
+          "required": ["gap_number", "title", "description", "category", "energy_level", "estimated_cost", "location", "reasoning"]
+        }
+      }
+    },
+    "required": ["suggestions"]
+  }
+}
+```
 
 ## System Prompt
 
@@ -76,8 +111,8 @@ don't duplicate the category unless the gaps are far apart.
   - After: {after_event_title}
 {end for}
 
-## Recent Suggestion History (last 14 days)
-{for each recent suggestion}
+## Recent Suggestion History (last 14 days, max 30 items)
+{for each recent suggestion, capped at 30}
 - {date}: "{title}" ({category}) — {status}
 {end for}
 
@@ -87,18 +122,7 @@ don't duplicate the category unless the gaps are far apart.
 {end for}
 
 ## Response Format
-Respond with a JSON array. One suggestion per gap. Each object must have:
-{
-  "gap_number": 1,
-  "title": "Short, catchy title",
-  "description": "2-3 sentences. Be specific about what to do, where, and why now.",
-  "category": "outdoor|cultural|social|fitness|creative|culinary|relaxation",
-  "energy_level": "low|medium|high",
-  "estimated_cost": "free|$|$$|$$$",
-  "location": "Specific place name or 'Home'",
-  "location_url": "Google Maps URL or null",
-  "reasoning": "One sentence on why this is a good fit for this gap"
-}
+Use the suggest_activities tool to return your suggestions. One suggestion per gap.
 ```
 
 ## Example LLM Response
@@ -166,7 +190,7 @@ Using Sonnet keeps costs under $1/month even with occasional manual re-generatio
 | Scenario | Behavior |
 |----------|----------|
 | Claude API down | Skip suggestions for the day, send Telegram message: "Couldn't generate suggestions today. API issue." |
-| Malformed JSON response | Retry once with lower temperature (0.5). If still fails, skip. |
+| Malformed JSON response | Tool use schema enforcement prevents most cases. Retry once with lower temperature (0.5). If still fails, skip. |
 | No free gaps found | Don't call the API. Send Telegram: "Tomorrow's packed! No gaps to fill." |
 | All gaps < 45 min | Don't call the API. Optionally note: "Only short breaks tomorrow — enjoy the hustle." |
 

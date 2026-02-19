@@ -26,8 +26,9 @@
 │ title            │
 │ description      │
 │ location         │
-│ start_time       │
-│ end_time         │
+│ start_time       │  (UTC)
+│ end_time         │  (UTC)
+│ original_tz      │  (IANA timezone from provider, e.g. "America/New_York")
 │ all_day          │
 │ status           │  (confirmed, tentative, cancelled)
 │ busy             │  (busy, free, tentative)
@@ -38,13 +39,29 @@
 │ updated_at       │
 └──────────────────┘
 
+┌──────────────────────┐
+│ DailyGap              │
+│──────────────────────│
+│ id (PK)              │
+│ gap_date             │  (DATE, the day this gap belongs to)
+│ start_time           │  (UTC)
+│ end_time             │  (UTC)
+│ duration_minutes     │
+│ time_of_day          │  (morning, afternoon, evening)
+│ duration_bucket      │  (short, medium, long)
+│ before_event_title   │
+│ after_event_title    │
+│ pipeline_run_id      │  (links to the pipeline run that generated this gap)
+│ created_at           │
+└──────────────────────┘
+
 ┌──────────────────────┐       ┌──────────────────────┐
 │ ActivitySuggestion    │       │ SuggestionFeedback    │
 │──────────────────────│       │──────────────────────│
 │ id (PK)              │──────►│ id (PK)              │
 │ suggested_date       │       │ suggestion_id (FK)   │
-│ start_time           │       │ action               │ (approved, rejected, edited, expired)
-│ end_time             │       │ edit_notes           │
+│ start_time           │  (UTC)│ action               │ (approved, rejected, edited, expired)
+│ end_time             │  (UTC)│ edit_notes           │
 │ title                │       │ created_at           │
 │ description          │       └──────────────────────┘
 │ category             │  (outdoor, cultural, social, fitness, creative, culinary, relaxation)
@@ -76,8 +93,8 @@
 │ id (PK)              │
 │ label                │  ("Free time", "Family dinner", "Wind down")
 │ day_of_week          │  (0-6, nullable for daily)
-│ start_time           │  (HH:MM)
-│ end_time             │  (HH:MM)
+│ start_time           │  (HH:MM, in user's local timezone)
+│ end_time             │  (HH:MM, in user's local timezone)
 │ is_active            │
 │ created_at           │
 │ updated_at           │
@@ -88,9 +105,9 @@
 │──────────────────────────│       │──────────────────────────│
 │ id (PK)                  │──────►│ id (PK)                  │
 │ label                    │       │ goal_id (FK)             │
-│ category                 │       │ week_start               │ (ISO week boundary)
-│ duration_minutes         │       │ scheduled_start          │
-│ times_per_week           │       │ scheduled_end            │
+│ category                 │       │ week_start               │ (ISO week Monday, DATE)
+│ duration_minutes         │       │ scheduled_start          │ (UTC)
+│ times_per_week           │       │ scheduled_end            │ (UTC)
 │ preferred_time_of_day    │       │ status                   │ (scheduled, completed, skipped, rescheduled)
 │ energy_level             │       │ nylas_event_id           │ (links to created calendar event)
 │ earliest_hour            │       │ created_at               │
@@ -102,6 +119,20 @@
 │ created_at               │
 │ updated_at               │
 └──────────────────────────┘
+
+┌──────────────────────┐
+│ PipelineRun           │
+│──────────────────────│
+│ id (PK)              │
+│ run_date             │  (DATE, the target date for suggestions)
+│ started_at           │  (UTC)
+│ completed_at         │  (UTC, nullable)
+│ status               │  (running, completed, failed)
+│ last_completed_step  │  (sync, gaps, enrich, goals, suggest)
+│ error_message        │  (nullable)
+│ metrics              │  (JSON: events_synced, gaps_found, goals_placed, suggestions_generated)
+│ created_at           │
+└──────────────────────┘
 ```
 
 ## Table Details
@@ -145,7 +176,7 @@ CREATE INDEX idx_calendars_account ON calendars(account_id);
 
 ### Event
 
-Normalized calendar events from all providers. The `category` field is auto-assigned based on title/description keywords.
+Normalized calendar events from all providers. The `category` field is auto-assigned based on title/description keywords. **All times stored in UTC.** The `original_tz` field preserves the source timezone from the calendar provider for display purposes.
 
 ```sql
 CREATE TABLE events (
@@ -155,8 +186,9 @@ CREATE TABLE events (
     title           TEXT,
     description     TEXT,
     location        TEXT,
-    start_time      DATETIME NOT NULL,
-    end_time        DATETIME NOT NULL,
+    start_time      DATETIME NOT NULL,  -- UTC
+    end_time        DATETIME NOT NULL,  -- UTC
+    original_tz     TEXT,               -- IANA timezone e.g. "America/New_York"
     all_day         BOOLEAN NOT NULL DEFAULT 0,
     status          TEXT NOT NULL DEFAULT 'confirmed'
                     CHECK (status IN ('confirmed', 'tentative', 'cancelled')),
@@ -175,16 +207,65 @@ CREATE INDEX idx_events_time ON events(start_time, end_time);
 CREATE INDEX idx_events_nylas ON events(nylas_event_id);
 ```
 
+**Data retention:** Events older than 90 days are deleted by the nightly maintenance job. The `raw_data` JSON blob is the largest column — retention prevents unbounded growth.
+
+### DailyGap
+
+Persisted gap computation from the daily pipeline. Survives process restarts, ensuring the suggestion generation step has data even if the gap detection step ran in a prior process lifecycle.
+
+```sql
+CREATE TABLE daily_gaps (
+    id                   INTEGER PRIMARY KEY AUTOINCREMENT,
+    gap_date             DATE NOT NULL,
+    start_time           DATETIME NOT NULL,  -- UTC
+    end_time             DATETIME NOT NULL,  -- UTC
+    duration_minutes     INTEGER NOT NULL,
+    time_of_day          TEXT NOT NULL CHECK (time_of_day IN ('morning', 'afternoon', 'evening')),
+    duration_bucket      TEXT NOT NULL CHECK (duration_bucket IN ('short', 'medium', 'long')),
+    before_event_title   TEXT,
+    after_event_title    TEXT,
+    pipeline_run_id      INTEGER REFERENCES pipeline_runs(id),
+    created_at           DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE INDEX idx_daily_gaps_date ON daily_gaps(gap_date);
+```
+
+**Retention:** Gaps older than 7 days are deleted by the nightly maintenance job.
+
+### PipelineRun
+
+Tracks each execution of the daily pipeline for observability and idempotency. The `last_completed_step` field enables debugging and potential future resume-from-failure logic.
+
+```sql
+CREATE TABLE pipeline_runs (
+    id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+    run_date            DATE NOT NULL,
+    started_at          DATETIME NOT NULL,  -- UTC
+    completed_at        DATETIME,           -- UTC, null while running
+    status              TEXT NOT NULL DEFAULT 'running'
+                        CHECK (status IN ('running', 'completed', 'failed')),
+    last_completed_step TEXT CHECK (last_completed_step IN ('sync', 'gaps', 'enrich', 'goals', 'suggest')),
+    error_message       TEXT,
+    metrics             TEXT,  -- JSON: {"events_synced": 5, "gaps_found": 4, "goals_placed": 2, "suggestions_generated": 3}
+    created_at          DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE INDEX idx_pipeline_runs_date ON pipeline_runs(run_date);
+```
+
 ### ActivitySuggestion
 
 LLM-generated activity suggestions. Each corresponds to a specific free gap on a specific date.
+
+**Data retention:** Suggestions older than 30 days are deleted by the nightly maintenance job. Feedback records are cascade-deleted with their parent suggestion.
 
 ```sql
 CREATE TABLE activity_suggestions (
     id              INTEGER PRIMARY KEY AUTOINCREMENT,
     suggested_date  DATE NOT NULL,
-    start_time      DATETIME NOT NULL,
-    end_time        DATETIME NOT NULL,
+    start_time      DATETIME NOT NULL,  -- UTC
+    end_time        DATETIME NOT NULL,  -- UTC
     title           TEXT NOT NULL,
     description     TEXT NOT NULL,
     category        TEXT NOT NULL
@@ -206,7 +287,10 @@ CREATE TABLE activity_suggestions (
 
 CREATE INDEX idx_suggestions_date ON activity_suggestions(suggested_date);
 CREATE INDEX idx_suggestions_status ON activity_suggestions(status);
+CREATE UNIQUE INDEX idx_suggestions_idempotent ON activity_suggestions(suggested_date, start_time, end_time);
 ```
+
+The unique index on `(suggested_date, start_time, end_time)` prevents duplicate suggestions if the pipeline runs twice for the same date.
 
 ### SuggestionFeedback
 
@@ -291,8 +375,8 @@ CREATE TABLE goal_instances (
     id               INTEGER PRIMARY KEY AUTOINCREMENT,
     goal_id          INTEGER NOT NULL REFERENCES recurring_goals(id) ON DELETE CASCADE,
     week_start       DATE NOT NULL,  -- Monday of the ISO week
-    scheduled_start  DATETIME NOT NULL,
-    scheduled_end    DATETIME NOT NULL,
+    scheduled_start  DATETIME NOT NULL,  -- UTC
+    scheduled_end    DATETIME NOT NULL,  -- UTC
     status           TEXT NOT NULL DEFAULT 'scheduled'
                      CHECK (status IN ('scheduled', 'completed', 'skipped', 'rescheduled')),
     nylas_event_id   TEXT,  -- populated when pushed to calendar
@@ -374,4 +458,52 @@ WHERE rg.is_active = 1
 GROUP BY rg.id
 HAVING remaining_count > 0
 ORDER BY rg.priority DESC, remaining_count DESC;
+
+-- name: GetDailyGaps :many
+SELECT * FROM daily_gaps
+WHERE gap_date = @gap_date
+ORDER BY start_time;
+
+-- name: GetExistingSuggestionsForDate :many
+SELECT * FROM activity_suggestions
+WHERE suggested_date = @suggested_date
+  AND status != 'expired';
+
+-- name: DeleteOldEvents :exec
+DELETE FROM events
+WHERE updated_at < datetime('now', '-90 days');
+
+-- name: DeleteOldSuggestions :exec
+DELETE FROM activity_suggestions
+WHERE created_at < datetime('now', '-30 days');
+
+-- name: DeleteOldGaps :exec
+DELETE FROM daily_gaps
+WHERE gap_date < date('now', '-7 days');
+
+-- name: DeleteOldPipelineRuns :exec
+DELETE FROM pipeline_runs
+WHERE created_at < datetime('now', '-30 days');
 ```
+
+## Timezone Handling
+
+**Critical design decision:** All `DATETIME` columns store UTC values. Conversion to/from the user's timezone happens at the application boundary:
+
+- **On ingest** (from Nylas): Convert provider-local times to UTC, store `original_tz` for display
+- **On display** (to Telegram/API): Convert UTC to user's configured timezone (`preferences.timezone`)
+- **Gap detection**: Active hours ("07:00-22:00") are interpreted in user's timezone, converted to UTC for comparison
+- **Protected blocks**: `start_time`/`end_time` are in user's local timezone (HH:MM), converted to UTC dynamically during gap detection
+
+**DST handling:** On DST transition days, active hours shift. The application uses Go's `time.LoadLocation` with the IANA timezone database to handle this correctly. Test cases for DST transitions are required.
+
+## Data Retention
+
+| Table | Retention | Rationale |
+|-------|-----------|-----------|
+| `events` | 90 days | Oldest events are irrelevant; raw_data JSON is the bulk of storage |
+| `activity_suggestions` + `suggestion_feedback` | 30 days | LLM prompt only uses 14 days of history; 30 days provides buffer |
+| `daily_gaps` | 7 days | Ephemeral computation data, only current/next few days are relevant |
+| `pipeline_runs` | 30 days | Debugging/observability; older runs aren't useful |
+| `goal_instances` | No auto-delete | Needed for long-term fulfillment tracking |
+| `recurring_goals` | Soft-delete (`is_active = false`) | Preserve history of past goals |

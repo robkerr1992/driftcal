@@ -18,9 +18,51 @@ Authorization: Bearer <API_KEY>
 
 The API key is set via the `DRIFTCAL_API_KEY` environment variable. Webhook endpoints use their own signature verification (Nylas HMAC, Telegram secret token).
 
+## Rate Limiting
+
+All endpoints are rate-limited. The `POST /api/suggestions/generate` endpoint has a stricter limit to prevent runaway Claude API costs.
+
+| Scope | Limit |
+|-------|-------|
+| General API | 60 requests/minute |
+| `POST /api/suggestions/generate` | 1 request/hour |
+
+## Pagination
+
+List endpoints support pagination via `limit` and `offset` query parameters:
+
+| Param | Type | Default | Max | Description |
+|-------|------|---------|-----|-------------|
+| `limit` | integer | 50 | 200 | Items per page |
+| `offset` | integer | 0 | — | Items to skip |
+
+Events endpoints additionally enforce a **maximum date range of 90 days**.
+
 ---
 
 ## Endpoints
+
+### Health
+
+#### `GET /health`
+
+Health check endpoint for monitoring (Caddy, systemd, external monitors). No authentication required.
+
+**Response** `200 OK`
+```json
+{
+  "status": "healthy",
+  "uptime_seconds": 86400,
+  "database": "ok",
+  "last_sync_at": "2026-02-18T06:15:01Z",
+  "last_suggestion_at": "2026-02-18T06:15:03Z",
+  "last_pipeline_status": "completed"
+}
+```
+
+**Response** `503 Service Unavailable` (if database is unreachable or last pipeline failed)
+
+---
 
 ### Calendar Accounts
 
@@ -65,7 +107,7 @@ Initiate Nylas OAuth flow for a new calendar provider.
 
 #### `DELETE /api/accounts/:id`
 
-Disconnect a calendar account and remove all its events.
+Soft-disconnect a calendar account. Sets `is_active = false` and stops syncing. Events are preserved for history.
 
 **Response** `204 No Content`
 
@@ -218,7 +260,7 @@ List activity suggestions.
 
 #### `POST /api/suggestions/:id/approve`
 
-Approve a suggestion and create a calendar event.
+Approve a suggestion and create a calendar event. **Before creating the event, the server re-checks the time slot via Nylas** to ensure the calendar hasn't changed since the suggestion was generated.
 
 **Request** (optional edits)
 ```json
@@ -234,6 +276,16 @@ Approve a suggestion and create a calendar event.
 {
   "suggestion": { "...updated suggestion with status: approved..." },
   "event": { "...created calendar event..." }
+}
+```
+
+**Response** `409 Conflict` (time slot now occupied)
+```json
+{
+  "error": {
+    "code": "conflict",
+    "message": "This time slot now has a conflict with 'Team Standup'. Would you like to find another time?"
+  }
 }
 ```
 

@@ -12,6 +12,20 @@ The Telegram bot is DriftCal's primary interface for MVP. It delivers daily dige
 4. Configure webhook: `POST https://driftcal.yourdomain.com/api/webhooks/telegram`
 5. Set webhook secret token for validation
 
+## Authentication
+
+**The bot is restricted to a single authorized user.** The Telegram user ID is set via the `TELEGRAM_AUTHORIZED_USER_ID` environment variable.
+
+**All incoming messages — including `/start` — are checked against this ID before any processing.** Messages from unauthorized users receive no response (silent reject). This prevents anyone who discovers the bot from registering or interacting with it.
+
+```go
+// Pseudocode — applied before any command handler
+if update.Message.From.ID != config.AuthorizedUserID {
+    log.Warn("unauthorized message", "from_id", update.Message.From.ID)
+    return // silent reject
+}
+```
+
 ## Commands
 
 | Command | Description |
@@ -286,7 +300,8 @@ Friday, Feb 21
 
 ## Security
 
-- Bot only responds to the configured Telegram user ID (set during `/start`)
-- Webhook endpoint validates `X-Telegram-Bot-Api-Secret-Token`
+- **Bot restricted to authorized user ID** — `TELEGRAM_AUTHORIZED_USER_ID` env var checked on every message before processing, including `/start`. Unauthorized messages silently rejected.
+- Webhook endpoint validates `X-Telegram-Bot-Api-Secret-Token` header
 - No sensitive data (event titles, locations) in logs
 - Callback data IDs are validated against the database (no forged suggestion IDs)
+- `/start` does NOT register new users — it links the pre-authorized Telegram user to the DriftCal instance

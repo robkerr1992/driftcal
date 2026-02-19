@@ -37,7 +37,7 @@
 
 ```
 github.com/go-chi/chi/v5          # HTTP router
-github.com/mattn/go-sqlite3        # SQLite driver (CGO)
+modernc.org/sqlite                 # SQLite driver (pure Go, no CGO)
 github.com/pressly/goose/v3        # Database migrations
 github.com/anthropics/anthropic-go # Claude API client
 github.com/go-telegram-bot-api/telegram-bot-api/v5  # Telegram bot
@@ -60,6 +60,7 @@ github.com/rs/zerolog              # Structured logging
 - No external database server to manage, monitor, or pay for
 - Backup is copying one file (or streaming via Litestream)
 - If scaling is ever needed, migration to Postgres via sqlc is straightforward (just change the driver)
+- **Using `modernc.org/sqlite` (pure Go)** instead of `mattn/go-sqlite3` — eliminates CGO dependency, simplifies cross-compilation, produces a single static binary
 
 ### sqlc over GORM/ent
 - Write actual SQL, get type-safe Go code

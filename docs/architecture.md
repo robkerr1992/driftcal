@@ -10,37 +10,49 @@ DriftCal is a single Go binary that orchestrates calendar data from multiple pro
 ┌──────────────────────────────────────────────────────────────────┐
 │                        Go Backend                                 │
 │                                                                   │
-│  ┌──────────────┐   ┌──────────────┐   ┌──────────────┐   ┌─────────────────────┐  │
-│  │ Calendar Sync │   │ Gap Detection│   │    Goal      │   │ Activity Suggestion │  │
-│  │   Service     │──►│   Engine     │──►│  Scheduler   │──►│    Engine            │  │
-│  │              │   │              │   │              │   │                     │  │
-│  │ - Nylas SDK  │   │ - Merge busy │   │ - Score slots│   │ - Claude API        │  │
-│  │ - Webhooks   │   │   blocks     │   │ - Place goals│   │ - Weather API       │  │
-│  │ - Polling    │   │ - Find gaps  │   │ - Track week │   │ - Places API        │  │
-│  │   fallback   │   │   ≥45 min    │   │   fulfillment│   │ - Events API        │  │
-│  │ - Event      │   │ - Tag time   │   │ - Respect    │   │ - Interest matching │  │
-│  │   normalize  │   │   of day     │   │   spacing    │   │ - Dedup history     │  │
-│  └──────┬───────┘   └──────────────┘   └──────────────┘   └──────────┬──────────┘  │
-│         │                                                             │              │
-│  ┌──────▼───────┐   ┌──────────────┐   ┌─────────────────────────────▼──────────┐  │
-│  │   Event      │   │    User      │   │          Notification                   │  │
-│  │   Store      │   │  Preferences │   │            Service                      │  │
-│  │              │   │   Service    │   │                                         │  │
-│  │ - CRUD ops   │   │              │   │ - Telegram Bot API                      │  │
-│  │ - Conflict   │   │ - Active hrs │   │ - Goal instances (Reschedule/Skip)      │  │
-│  │   detection  │   │ - Interests  │   │ - Activity suggestions (Approve/Reject) │  │
-│  │ - History    │   │ - Energy     │   │ - Callback handling + event creation    │  │
-│  └──────────────┘   │   profile    │   └─────────────────────────────────────────┘  │
-│                     │ - Protected  │                              │
-│                     │   blocks     │                              │
-│                     │ - Recurring  │                              │
-│                     │   goals      │                              │
-│                     └──────────────┘                              │
+│  ┌──────────────────────────────────────────────────────────────┐│
+│  │                  Service Interfaces                           ││
+│  │  CalendarSyncService │ NotificationSender │ SuggestionGen    ││
+│  └──────────────────────────────────────────────────────────────┘│
+│         │                       │                    │            │
+│  ┌──────▼───────┐   ┌──────────▼───┐   ┌───────────▼─────────┐ │
+│  │ Calendar Sync │   │ Notification │   │ Activity Suggestion │ │
+│  │   (Nylas)     │   │  (Telegram)  │   │    (Claude)         │ │
+│  │              │   │              │   │                     │ │
+│  │ - Nylas SDK  │   │ - Bot API    │   │ - Tool Use (JSON)   │ │
+│  │ - Webhooks   │   │ - Digests    │   │ - Weather API       │ │
+│  │ - Polling    │   │ - Callbacks  │   │ - Places API        │ │
+│  │ - Rate limit │   │ - Auth guard │   │ - Interest matching │ │
+│  │ - Normalize  │   │   (user ID)  │   │ - Dedup history     │ │
+│  └──────┬───────┘   └──────────────┘   └──────────┬──────────┘ │
+│         │                                          │             │
+│  ┌──────▼───────┐   ┌──────────────┐   ┌──────────▼──────────┐ │
+│  │   Event      │   │ Gap Detection│   │    Goal             │ │
+│  │   Store      │   │   Engine     │   │  Scheduler          │ │
+│  │              │   │              │   │                     │ │
+│  │ - CRUD ops   │   │ - Merge busy │   │ - Score slots       │ │
+│  │ - Conflict   │   │ - Find gaps  │   │ - Place goals       │ │
+│  │   detection  │   │ - Persist to │   │ - Track week        │ │
+│  │ - History    │   │   daily_gaps │   │ - Two-pass: constrained│
+│  │ - Retention  │   │ - Handle all-│   │   goals first, then │ │
+│  │   (90 days)  │   │   day events │   │   by priority       │ │
+│  └──────────────┘   └──────────────┘   └─────────────────────┘ │
+│                                                                   │
+│  ┌──────────────┐   ┌──────────────────────────────────────────┐│
+│  │    User      │   │         Daily Pipeline                    ││
+│  │  Preferences │   │  (single chained function at 06:00)       ││
+│  │   Service    │   │                                           ││
+│  │              │   │  Sync → Gaps → Enrich → Goals → Suggest  ││
+│  │ - Active hrs │   │  (sequential, error-gated between steps)  ││
+│  │ - Interests  │   │                                           ││
+│  │ - Energy     │   │  07:30 Digest │ 00:00 Expire+Retention   ││
+│  │ - Timezone   │   │  */15 Calendar Sync (background)          ││
+│  │ - Goals      │   └──────────────────────────────────────────┘│
+│  └──────────────┘                                                │
 │                                                                   │
 │  ┌──────────────────────────────────────────────────────────────┐│
-│  │                     Cron Scheduler                            ││
-│  │  06:00 Gap Detection │ 06:05 Enrichment │ 06:15 Suggestions  ││
-│  │  07:30 Digest Send   │ 00:00 Expire     │ */15 Calendar Sync ││
+│  │                     Health & Observability                    ││
+│  │  GET /health │ Structured logging │ Pipeline status tracking ││
 │  └──────────────────────────────────────────────────────────────┘│
 └──────────────────────────────────────────────────────────────────┘
          │              │              │              │
@@ -68,65 +80,70 @@ Nylas Webhook ──► /api/webhooks/nylas ──► Validate signature
 
 Every 15 minutes, a polling job runs as a fallback to catch any missed webhooks.
 
-### 2. Suggestion Generation Flow
+### 2. Daily Pipeline Flow (Chained, Not Independent Crons)
+
+The daily pipeline runs as a **single `RunDailyPipeline()` function** triggered at 06:00. Each step runs sequentially with error checking between steps. If any step fails, downstream steps are skipped and the user is notified.
 
 ```
-06:00 Cron ──► Load events for next 3 days
-                    │
-                    ▼
-              Merge overlapping busy blocks
-                    │
-                    ▼
-              Subtract from active hours
-              (e.g., 7am-10pm)
-                    │
-                    ▼
-              Filter gaps ≥ 45 min
-                    │
-                    ▼
-              Tag each gap:
-              - time_of_day (morning/afternoon/evening)
-              - duration_bucket (short/medium/long)
-              - adjacent_events (what's before/after)
-                    │
-                    ▼
-06:05 ────►   Enrich with context:
-              - Weather forecast (OpenWeather API)
-              - Local events (Eventbrite API, Phase 2)
-              - Nearby places (Google Places API, Phase 2)
-                    │
-                    ▼
-06:10 ────►   GOAL SCHEDULING (new step — runs before activity suggestions)
-              1. Load active RecurringGoals
-              2. Check fulfillment: how many times each goal
-                 has been scheduled/completed this week
-              3. For unfulfilled goals, score candidate slots:
-                 - Time-of-day preference match (weight 2.0)
-                 - Energy level match (weight 1.5)
-                 - Allowed day match (weight 1.0)
-                 - Spacing from last instance (weight 1.5)
-                 - Gap duration fit — prefer gaps where goal
-                   leaves ≥30 min remaining (weight 0.8)
-              4. Assign goals to highest-scoring slots
-                 (higher priority goals placed first)
-              5. Create GoalInstance records with status "scheduled"
-              6. Push goal events to calendar via Nylas
-              7. Remove goal-occupied time from available gaps
-                    │
-                    ▼
-06:15 ────►   Batch REMAINING gaps into single Claude API call
-              Include: user profile, weather, recent history,
-              and scheduled goals as context
-                    │
-                    ▼
-              Parse structured JSON response
-              Store as ActivitySuggestion records
-                    │
-                    ▼
-07:30 ────►   Format Telegram message with inline keyboards
+06:00 RunDailyPipeline() ──►
+│
+├─ Step 1: Calendar Sync (ensure fresh data)
+│     Sync all active accounts via Nylas
+│     │ on error → notify user, abort pipeline
+│     ▼
+├─ Step 2: Gap Detection
+│     Load blocking events for next 3 days (all times stored/compared in UTC)
+│     Handle all-day events: all-day + busy = block full active hours
+│     Merge overlapping busy blocks
+│     Subtract from active hours (converted from user timezone to UTC)
+│     Filter gaps ≥ 45 min
+│     Tag each gap: time_of_day, duration_bucket, adjacent_events
+│     *** Persist gaps to `daily_gaps` table *** (survives process restart)
+│     │ on error → notify user, abort pipeline
+│     ▼
+├─ Step 3: Context Enrichment
+│     Fetch weather forecast (OpenWeather API)
+│     (Phase 2) Fetch local events, nearby places
+│     Cache enrichment data in memory + DB
+│     │ on error → continue with degraded suggestions (no weather context)
+│     ▼
+├─ Step 4: Goal Scheduling
+│     Load active RecurringGoals
+│     Check weekly fulfillment per goal
+│     Two-pass scheduling:
+│       Pass 1: Goals with constrained allowed_days (fewer options = schedule first)
+│       Pass 2: Remaining goals by priority descending
+│     For each unfulfilled goal:
+│       Score candidate slots (time-of-day, energy, spacing, gap fit)
+│       Only schedule within current ISO week (avoid week boundary issues)
+│       Assign to highest-scoring slot
+│       Create GoalInstance with status "scheduled"
+│       Check for conflicts via Nylas before creating event
+│       Push goal event to calendar
+│       Remove occupied time from available gaps
+│     Idempotency: check for existing suggestions before generating
+│     │ on error → continue to suggestions with whatever goals were placed
+│     ▼
+├─ Step 5: Suggestion Generation
+│     Check for remaining gaps — if none, skip
+│     Load user preferences, weather context, recent history (capped at 30 items)
+│     Build prompt, call Claude API using tool use for schema-enforced JSON
+│     Check for existing suggestions for this date (idempotency)
+│     Parse and store ActivitySuggestion records
+│     │ on error → notify user, digest will have goals but no suggestions
+│     ▼
+└─ Pipeline complete. Log total duration + per-step metrics.
+
+07:30 ────►   Morning Digest (separate cron)
+              Load scheduled goals + pending suggestions for tomorrow
+              Format Telegram message with inline keyboards
               SECTION 1: Scheduled goals (Reschedule/Skip buttons)
               SECTION 2: Activity suggestions (Approve/Reject buttons)
               Send to user's Telegram chat
+
+00:00 ────►   Maintenance (separate cron)
+              Expire stale suggestions
+              Data retention: delete events >90 days, suggestions >30 days
 ```
 
 ### 3. Approval Flow
@@ -135,14 +152,22 @@ Every 15 minutes, a polling job runs as a fallback to catch any missed webhooks.
 User taps [Approve] ──► Telegram callback_query
                               │
                               ▼
-                        Update suggestion status → "approved"
+                        Re-check time slot via Nylas
+                        (calendar may have changed since pipeline ran)
                               │
-                              ▼
-                        Create event via Nylas API
-                        (pushes to source calendar)
+                              ├── Conflict detected:
+                              │     Notify user: "This slot is now taken.
+                              │     Want me to find another time?"
                               │
-                              ▼
-                        Confirm to user via Telegram
+                              └── No conflict:
+                                    Update suggestion status → "approved"
+                                          │
+                                          ▼
+                                    Create event via Nylas API
+                                    (pushes to source calendar)
+                                          │
+                                          ▼
+                                    Confirm to user via Telegram
 ```
 
 ## Key Design Decisions
@@ -156,11 +181,23 @@ Single-user, read-heavy workload. SQLite in WAL mode handles concurrent reads fr
 ### Nylas Over Direct Provider APIs
 Multi-provider calendar sync is a solved problem that Nylas handles well. Building OAuth flows, token refresh, webhook processing, and event normalization for Google + Microsoft + Apple would consume most of the development time. Nylas's free tier (5 accounts) covers personal use.
 
+### Service Interfaces for External Dependencies
+All external services are accessed through Go interfaces (`CalendarSyncService`, `NotificationSender`, `SuggestionGenerator`). This costs almost nothing upfront and makes migration feasible if Nylas changes pricing, Telegram is replaced, or Claude is swapped for another model.
+
+### Chained Pipeline Over Independent Crons
+The daily pipeline (sync → gaps → enrich → goals → suggest) runs as a single sequential function, not independent cron jobs at fixed intervals. This guarantees data consistency — each step operates on the output of the previous step — and simplifies error handling.
+
 ### Batch LLM Calls Over Per-Gap Calls
 One Claude call per day with all gaps produces better suggestions because the model can reason about the day holistically — it won't suggest two high-energy activities back-to-back or repeat similar activities in adjacent gaps. It's also cheaper (~$0.10/call vs $0.50+ for individual calls).
 
+### Claude Tool Use Over Raw JSON Prompting
+The suggestion engine uses Claude's tool use / structured output feature with a defined `suggest_activities` schema rather than asking for raw JSON. This nearly eliminates JSON parsing failures, which are the primary failure mode of unstructured LLM output.
+
 ### Telegram Over Custom Mobile App
 Telegram bots have rich inline keyboards, are cross-platform, support rich text formatting, and require zero mobile development. The notification → approve/reject loop maps perfectly to Telegram's callback query model.
+
+### UTC Storage with Timezone Conversion
+All times are stored in UTC in the database. The user's timezone is stored in preferences and used for all display/conversion. This avoids DST-related bugs in gap detection and scheduling.
 
 ## Deployment
 
@@ -191,15 +228,30 @@ Telegram bots have rich inline keyboards, are cross-platform, support rich text 
 | Failure | Behavior |
 |---------|----------|
 | Nylas webhook missed | 15-min polling catches it |
-| Claude API down | Skip suggestions for the day, notify user via Telegram |
+| Daily pipeline step fails | Downstream steps skipped, user notified via Telegram with which step failed |
+| Claude API down | Skip suggestions for the day, notify user via Telegram. Goals still scheduled. |
+| Claude returns malformed output | Retry once with lower temperature. Tool use schema enforcement prevents most cases. |
 | Telegram API down | Retry 3x with exponential backoff, log failure |
-| Nylas event creation fails | Notify user, keep suggestion as "approved" for manual retry |
+| Nylas event creation fails on approve | Re-check for conflict first. Notify user, keep suggestion as "approved" for manual retry |
+| Time slot conflict on approve | Calendar changed since pipeline ran. Notify user, offer to find alternative time |
 | SQLite lock contention | WAL mode handles concurrent reads; writes are serialized via single goroutine |
+| Process restart mid-pipeline | Gaps persisted to `daily_gaps` table. Pipeline can resume from last completed step on next run |
+
+## Graceful Shutdown
+
+The service handles `SIGTERM` by:
+1. Stopping the cron scheduler (no new jobs start)
+2. Draining in-flight webhook/API handlers (30s timeout)
+3. Closing the SQLite database connection
+4. Exiting cleanly
 
 ## Security
 
 - All API keys stored in environment variables, never in code or config files
+- **Telegram bot restricted to authorized user ID** — `TELEGRAM_AUTHORIZED_USER_ID` env var, all messages from other IDs are rejected before processing (including `/start`)
 - Nylas webhook signature validation on every request
-- Telegram bot token validated via `X-Telegram-Bot-Api-Secret-Token` header
+- Telegram webhook validated via `X-Telegram-Bot-Api-Secret-Token` header
+- Nylas API rate limits enforced client-side via `golang.org/x/time/rate` limiter
+- Rate limiting on REST API — especially `POST /api/suggestions/generate` (prevents runaway Claude API costs)
 - SQLite DB file permissions restricted to application user
 - No PII logged — event titles and suggestion content are never written to logs
