@@ -13,7 +13,9 @@ DriftCal uses an in-process cron scheduler ([robfig/cron](https://github.com/rob
 | **Morning Digest** | 07:30 daily (configurable) | Send Telegram message with goals + suggestions |
 | **Maintenance** | 00:00 daily | Expire stale suggestions + data retention cleanup |
 
-All times are in the user's configured timezone (`preferences.timezone`).
+**All times are in the user's configured timezone** (`preferences.timezone`). The cron scheduler converts these to UTC internally using Go's `time.LoadLocation`. For example, if the user's timezone is `America/New_York`, the 06:00 pipeline runs at 11:00 UTC (EST) or 10:00 UTC (EDT). The digest time is configurable via the `digest_time` user preference and is also interpreted in the user's timezone.
+
+The **Calendar Sync** job runs on a fixed 15-minute interval regardless of timezone (it's not time-of-day sensitive).
 
 ## Daily Pipeline (Chained, Not Independent Crons)
 

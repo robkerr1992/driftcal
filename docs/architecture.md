@@ -1,5 +1,9 @@
 # Architecture
 
+## Single-User System
+
+DriftCal is a **single-user personal tool**. There is no user registration, multi-tenancy, or user table. All data belongs to the single operator. This simplification eliminates user management, session handling, per-user data isolation, and multi-tenant cron scheduling. See [Setup](setup.md) for the single-user authentication model.
+
 ## System Overview
 
 DriftCal is a single Go binary that orchestrates calendar data from multiple providers, detects free time gaps, generates AI-powered activity suggestions, and delivers them via Telegram. A Vue.js SPA provides a web interface for preferences and calendar visualization (Phase 2).
@@ -169,6 +173,113 @@ User taps [Approve] ──► Telegram callback_query
                                           ▼
                                     Confirm to user via Telegram
 ```
+
+## Gap Detection Algorithm
+
+The gap detection engine is the core scheduling primitive — it determines what time is "free" for goals and suggestions. This section specifies the algorithm precisely.
+
+### Input
+
+- **Date range**: Next 3 days from the pipeline run date
+- **Active hours**: From `UserPreferences.active_hours` (e.g., `07:00–22:00`), interpreted in the user's configured timezone
+- **Minimum gap duration**: From `UserPreferences.min_gap_minutes` (default 45)
+
+### Step 1: Collect Blocking Intervals
+
+For each day in the range, gather all time blocks that count as "busy":
+
+**Calendar events** (from `events` table):
+- Include if: `calendar.is_blocking = true` AND `calendar.is_active = true` AND `event.status != 'cancelled'` AND `event.busy != 'free'`
+- **Tentative events** (`busy = 'tentative'`): **treated as blocking** (conservative default — better to leave a gap unfilled than to double-book)
+- **All-day events** with `busy = 'busy'`: block the entire active hours window for that day
+- **All-day events** with `busy = 'free'` or `busy = 'tentative'`: ignored (informational events like "Daylight Saving Time")
+- **Multi-day events**: clamp to the current day's active hours window. A 3-day conference blocks active hours on each day independently.
+- **Events spanning midnight**: split at midnight, attribute each portion to its respective day
+
+**Protected blocks** (from `protected_blocks` table):
+- Include if: `is_active = true` AND (`day_of_week IS NULL` OR `day_of_week` matches the target day)
+- Times are in user's local timezone — convert to UTC for comparison
+
+**Scheduled goal instances** (from `goal_instances` table):
+- Include if: `status = 'scheduled'` AND falls within the target day
+- Goals occupy time just like calendar events
+
+### Step 2: Build Active Hours Window
+
+For each day, convert the user's active hours to UTC:
+
+```
+active_start_utc = convert("07:00", user_timezone, target_date) → UTC
+active_end_utc   = convert("22:00", user_timezone, target_date) → UTC
+```
+
+On DST transition days, active hours shift by the DST offset. Go's `time.LoadLocation` with the IANA timezone database handles this correctly.
+
+### Step 3: Merge Overlapping Intervals
+
+Sort all blocking intervals by start time, then merge overlapping or adjacent ones:
+
+```
+sorted = sort(blocking_intervals, by: start_time)
+merged = []
+for interval in sorted:
+    if merged is empty OR interval.start > merged.last.end:
+        merged.append(interval)
+    else:
+        merged.last.end = max(merged.last.end, interval.end)
+```
+
+### Step 4: Subtract from Active Hours
+
+Walk through the merged blocking intervals and collect the gaps between them, clamped to the active hours window:
+
+```
+gaps = []
+cursor = active_start_utc
+
+for block in merged:
+    block_start = max(block.start, active_start_utc)
+    block_end   = min(block.end, active_end_utc)
+
+    if block_start > cursor:
+        gaps.append(Gap{start: cursor, end: block_start})
+
+    cursor = max(cursor, block_end)
+
+if cursor < active_end_utc:
+    gaps.append(Gap{start: cursor, end: active_end_utc})
+```
+
+### Step 5: Filter and Tag
+
+- **Filter**: Remove gaps shorter than `min_gap_minutes`
+- **Tag each gap**:
+  - `time_of_day`: Based on gap midpoint in user's local time — `morning` (before 12:00), `afternoon` (12:00–17:00), `evening` (after 17:00)
+  - `duration_bucket`: `short` (< 60 min), `medium` (60–120 min), `long` (> 120 min)
+  - `before_event_title`: Title of the event ending at or just before the gap start (null if gap starts at active hours start)
+  - `after_event_title`: Title of the event starting at or just after the gap end (null if gap ends at active hours end)
+
+### Step 6: Persist
+
+Insert gaps into the `daily_gaps` table, linked to the current `pipeline_run_id`. Delete any existing gaps for the same dates from prior runs first (idempotent).
+
+### Edge Cases Summary
+
+| Scenario | Behavior |
+|----------|----------|
+| Overlapping events (e.g., double-booked) | Merge step combines them into one blocking interval |
+| Event spans midnight | Split at midnight, each portion attributed to its day |
+| Event extends beyond active hours | Clamped to active hours window — only the overlap matters |
+| Event covers entire active hours | No gaps for that day |
+| Tentative event (`busy = 'tentative'`) | Treated as blocking (conservative) |
+| Cancelled event (`status = 'cancelled'`) | Excluded — not blocking |
+| Free event (`busy = 'free'`) | Excluded — not blocking |
+| All-day busy event | Blocks full active hours for that day |
+| All-day free event | Ignored |
+| DST transition day | Active hours shift with timezone. Go `time.LoadLocation` handles this. |
+| No events at all | Entire active hours window is one large gap |
+| Protected block on specific day | Only blocks on matching `day_of_week` |
+| Protected block daily (`day_of_week` is null) | Blocks on every day |
 
 ## Key Design Decisions
 
