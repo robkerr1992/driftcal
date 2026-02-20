@@ -3,6 +3,7 @@ package sync
 import (
 	"context"
 	"fmt"
+	"sync"
 	"time"
 
 	"github.com/rs/zerolog"
@@ -23,12 +24,13 @@ type EventFetcher interface {
 
 // Syncer polls Nylas for events and upserts them into the database.
 type Syncer struct {
-	fetcher  EventFetcher
-	queries  *sqlcdb.Queries
-	log      zerolog.Logger
-	interval time.Duration
-	cancel   context.CancelFunc
-	done     chan struct{}
+	fetcher   EventFetcher
+	queries   *sqlcdb.Queries
+	log       zerolog.Logger
+	interval  time.Duration
+	cancel    context.CancelFunc
+	done      chan struct{}
+	startOnce sync.Once
 }
 
 // New creates a Syncer with the given polling interval.
@@ -43,35 +45,38 @@ func New(fetcher EventFetcher, q *sqlcdb.Queries, log zerolog.Logger, interval t
 
 // Start begins the polling loop in a background goroutine.
 // It runs an initial sync immediately, then every interval.
+// Calling Start more than once is a no-op.
 func (s *Syncer) Start() {
-	ctx, cancel := context.WithCancel(context.Background())
-	s.cancel = cancel
-	s.done = make(chan struct{})
+	s.startOnce.Do(func() {
+		ctx, cancel := context.WithCancel(context.Background())
+		s.cancel = cancel
+		s.done = make(chan struct{})
 
-	go func() {
-		defer close(s.done)
+		go func() {
+			defer close(s.done)
 
-		// Initial sync
-		if err := s.SyncAll(ctx); err != nil {
-			s.log.Error().Err(err).Msg("initial sync failed")
-		}
+			// Initial sync
+			if err := s.SyncAll(ctx); err != nil {
+				s.log.Error().Err(err).Msg("initial sync failed")
+			}
 
-		ticker := time.NewTicker(s.interval)
-		defer ticker.Stop()
+			ticker := time.NewTicker(s.interval)
+			defer ticker.Stop()
 
-		for {
-			select {
-			case <-ctx.Done():
-				return
-			case <-ticker.C:
-				if err := s.SyncAll(ctx); err != nil {
-					s.log.Error().Err(err).Msg("periodic sync failed")
+			for {
+				select {
+				case <-ctx.Done():
+					return
+				case <-ticker.C:
+					if err := s.SyncAll(ctx); err != nil {
+						s.log.Error().Err(err).Msg("periodic sync failed")
+					}
 				}
 			}
-		}
-	}()
+		}()
 
-	s.log.Info().Dur("interval", s.interval).Msg("syncer started")
+		s.log.Info().Dur("interval", s.interval).Msg("syncer started")
+	})
 }
 
 // Stop gracefully shuts down the syncer and blocks until the goroutine exits.
@@ -118,7 +123,7 @@ func (s *Syncer) SyncAll(ctx context.Context) error {
 	}
 
 	s.log.Info().
-		Int("total_events", totalEvents).
+		Int("upserted_events", totalEvents).
 		Int("calendars", len(calendars)).
 		Int("failed", failedCals).
 		Msg("sync pass complete")
@@ -162,6 +167,7 @@ func (s *Syncer) syncCalendar(ctx context.Context, grantID, nylasCalendarID stri
 		return 0, fmt.Errorf("fetching events: %w", err)
 	}
 
+	var upserted int
 	for _, ev := range events {
 		params, err := NormalizeEvent(calendarID, &ev)
 		if err != nil {
@@ -171,8 +177,10 @@ func (s *Syncer) syncCalendar(ctx context.Context, grantID, nylasCalendarID stri
 
 		if _, err := s.queries.UpsertEvent(ctx, params); err != nil {
 			s.log.Warn().Err(err).Str("event_id", ev.ID).Msg("failed to upsert event")
+			continue
 		}
+		upserted++
 	}
 
-	return len(events), nil
+	return upserted, nil
 }

@@ -160,27 +160,37 @@ func TestSyncAll_PartialFailure(t *testing.T) {
 	log := zerolog.Nop()
 
 	// Create two accounts with calendars
-	acc1, _ := q.CreateAccount(context.Background(), sqlcdb.CreateAccountParams{
+	acc1, err := q.CreateAccount(context.Background(), sqlcdb.CreateAccountParams{
 		NylasGrantID: "grant-ok",
 		Provider:     "google",
 		Email:        "ok@example.com",
 	})
-	q.CreateCalendar(context.Background(), sqlcdb.CreateCalendarParams{
+	if err != nil {
+		t.Fatalf("creating acc1: %v", err)
+	}
+	if _, err := q.CreateCalendar(context.Background(), sqlcdb.CreateCalendarParams{
 		AccountID:       acc1.ID,
 		NylasCalendarID: "cal-ok",
 		Name:            "OK Calendar",
-	})
+	}); err != nil {
+		t.Fatalf("creating cal for acc1: %v", err)
+	}
 
-	acc2, _ := q.CreateAccount(context.Background(), sqlcdb.CreateAccountParams{
+	acc2, err := q.CreateAccount(context.Background(), sqlcdb.CreateAccountParams{
 		NylasGrantID: "grant-fail",
 		Provider:     "google",
 		Email:        "fail@example.com",
 	})
-	q.CreateCalendar(context.Background(), sqlcdb.CreateCalendarParams{
+	if err != nil {
+		t.Fatalf("creating acc2: %v", err)
+	}
+	if _, err := q.CreateCalendar(context.Background(), sqlcdb.CreateCalendarParams{
 		AccountID:       acc2.ID,
 		NylasCalendarID: "cal-fail",
 		Name:            "Fail Calendar",
-	})
+	}); err != nil {
+		t.Fatalf("creating cal for acc2: %v", err)
+	}
 
 	// Use a fetcher that fails for one calendar
 	failFetcher := &selectiveFetcher{
@@ -194,7 +204,7 @@ func TestSyncAll_PartialFailure(t *testing.T) {
 	}
 
 	s := New(failFetcher, q, log, time.Hour)
-	err := s.SyncAll(context.Background())
+	err = s.SyncAll(context.Background())
 
 	// Should report partial failure
 	if err == nil {
@@ -240,17 +250,17 @@ func TestSyncer_StartStop(t *testing.T) {
 	deadline := time.After(2 * time.Second)
 	ticker := time.NewTicker(10 * time.Millisecond)
 	defer ticker.Stop()
-	for {
+	synced := false
+	for !synced {
 		select {
 		case <-deadline:
 			t.Fatal("timed out waiting for initial sync")
 		case <-ticker.C:
 			if _, err := q.GetEventByNylasID(context.Background(), "evt-lifecycle"); err == nil {
-				goto synced
+				synced = true
 			}
 		}
 	}
-synced:
 	s.Stop()
 }
 
@@ -316,4 +326,52 @@ func TestSyncAccount_NonMatchingGrant(t *testing.T) {
 	if err == nil {
 		t.Error("event should not be inserted for non-matching grant")
 	}
+}
+
+func TestSyncer_DoubleStart(t *testing.T) {
+	q, _, _ := setupSyncerTestDB(t)
+	log := zerolog.Nop()
+
+	callCount := 0
+	fetcher := &countingFetcher{
+		inner: &mockFetcher{
+			events: map[string][]nylas.Event{
+				"nylas-cal-sync": {{
+					ID: "evt-double", Title: "Double Start", Status: "confirmed",
+					When: nylas.EventWhen{Object: "timespan", StartTime: 1704067200, EndTime: 1704070800},
+				}},
+			},
+		},
+		count: &callCount,
+	}
+
+	s := New(fetcher, q, log, 50*time.Millisecond)
+	s.Start()
+	s.Start() // second call should be a no-op
+
+	// Wait for initial sync
+	deadline := time.After(2 * time.Second)
+	ticker := time.NewTicker(10 * time.Millisecond)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-deadline:
+			t.Fatal("timed out waiting for sync")
+		case <-ticker.C:
+			if _, err := q.GetEventByNylasID(context.Background(), "evt-double"); err == nil {
+				s.Stop()
+				return
+			}
+		}
+	}
+}
+
+type countingFetcher struct {
+	inner EventFetcher
+	count *int
+}
+
+func (f *countingFetcher) ListEvents(ctx context.Context, grantID, calendarID string, start, end time.Time) ([]nylas.Event, error) {
+	*f.count++
+	return f.inner.ListEvents(ctx, grantID, calendarID, start, end)
 }

@@ -2,15 +2,20 @@ package handler
 
 import (
 	"context"
+	"crypto/rand"
 	"database/sql"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"net/http"
 	"strconv"
 	"strings"
+	"sync"
+	"time"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/rs/zerolog"
+	"modernc.org/sqlite"
 
 	"github.com/robkerr1992/driftcal/gen/sqlcdb"
 	"github.com/robkerr1992/driftcal/internal/nylas"
@@ -18,9 +23,36 @@ import (
 
 // NylasAccountService defines the Nylas operations needed by account handlers.
 type NylasAccountService interface {
-	AuthURL(redirectURI, provider string) string
+	AuthURL(redirectURI, provider, state string) string
 	ExchangeCode(ctx context.Context, code, redirectURI string) (*nylas.TokenResponse, error)
 	ListCalendars(ctx context.Context, grantID string) ([]nylas.Calendar, error)
+}
+
+// pendingStates stores OAuth state tokens awaiting callback. Each entry
+// maps state → expiry time. Expired entries are lazily cleaned on insert.
+var pendingStates sync.Map
+
+const stateMaxAge = 10 * time.Minute
+
+func generateState() (string, error) {
+	b := make([]byte, 16)
+	if _, err := rand.Read(b); err != nil {
+		return "", err
+	}
+	return hex.EncodeToString(b), nil
+}
+
+func storeState(state string) {
+	pendingStates.Store(state, time.Now().Add(stateMaxAge))
+}
+
+func consumeState(state string) bool {
+	v, ok := pendingStates.LoadAndDelete(state)
+	if !ok {
+		return false
+	}
+	expiry := v.(time.Time)
+	return time.Now().Before(expiry)
 }
 
 // ConnectAccount returns the Nylas OAuth URL for a given provider.
@@ -43,8 +75,16 @@ func ConnectAccount(nc NylasAccountService, baseURL string, q *sqlcdb.Queries, l
 			return
 		}
 
+		state, err := generateState()
+		if err != nil {
+			log.Error().Err(err).Msg("failed to generate OAuth state")
+			RespondError(w, http.StatusInternalServerError, "internal_error", "failed to generate state", log)
+			return
+		}
+		storeState(state)
+
 		redirectURI := baseURL + "/api/accounts/callback"
-		authURL := nc.AuthURL(redirectURI, provider)
+		authURL := nc.AuthURL(redirectURI, provider, state)
 
 		RespondJSON(w, http.StatusOK, map[string]string{"auth_url": authURL}, log)
 	}
@@ -57,6 +97,12 @@ func AccountCallback(nc NylasAccountService, baseURL string, q *sqlcdb.Queries, 
 		code := r.URL.Query().Get("code")
 		if code == "" {
 			RespondError(w, http.StatusBadRequest, "bad_request", "missing code parameter", log)
+			return
+		}
+
+		state := r.URL.Query().Get("state")
+		if state == "" || !consumeState(state) {
+			RespondError(w, http.StatusBadRequest, "bad_request", "invalid or expired state parameter", log)
 			return
 		}
 
@@ -163,7 +209,13 @@ func DisconnectAccount(q *sqlcdb.Queries, log zerolog.Logger) http.HandlerFunc {
 	}
 }
 
+const sqliteConstraintUnique = 2067
+
 // isUniqueViolation checks if a SQLite error is a UNIQUE constraint violation.
 func isUniqueViolation(err error) bool {
-	return err != nil && strings.Contains(err.Error(), "UNIQUE constraint failed")
+	var sqliteErr *sqlite.Error
+	if errors.As(err, &sqliteErr) {
+		return sqliteErr.Code() == sqliteConstraintUnique
+	}
+	return false
 }

@@ -235,6 +235,90 @@ func TestNormalizeEvent_RecurrenceRule(t *testing.T) {
 	}
 }
 
+func TestNormalizeEvent_TentativeBusy(t *testing.T) {
+	ev := &nylas.Event{
+		ID:     "evt-tentative",
+		Title:  "Maybe Meeting",
+		Status: "tentative",
+		Busy:   true,
+		When: nylas.EventWhen{
+			Object:    "timespan",
+			StartTime: 1704067200,
+			EndTime:   1704070800,
+		},
+	}
+
+	params, err := NormalizeEvent(1, ev)
+	if err != nil {
+		t.Fatalf("NormalizeEvent failed: %v", err)
+	}
+
+	if params.Busy != "tentative" {
+		t.Errorf("Busy = %q, want %q for tentative+busy event", params.Busy, "tentative")
+	}
+}
+
+func TestNormalizeEvent_InvalidDatespanStart(t *testing.T) {
+	ev := &nylas.Event{
+		ID:     "evt-bad-ds-start",
+		Status: "confirmed",
+		When: nylas.EventWhen{
+			Object:    "datespan",
+			StartDate: "not-a-date",
+			EndDate:   "2024-07-05",
+		},
+	}
+
+	_, err := NormalizeEvent(1, ev)
+	if err == nil {
+		t.Fatal("expected error for invalid datespan start_date")
+	}
+}
+
+func TestNormalizeEvent_InvalidDatespanEnd(t *testing.T) {
+	ev := &nylas.Event{
+		ID:     "evt-bad-ds-end",
+		Status: "confirmed",
+		When: nylas.EventWhen{
+			Object:    "datespan",
+			StartDate: "2024-07-01",
+			EndDate:   "not-a-date",
+		},
+	}
+
+	_, err := NormalizeEvent(1, ev)
+	if err == nil {
+		t.Fatal("expected error for invalid datespan end_date")
+	}
+}
+
+func TestNormalizeEvent_MultipleRecurrenceRules(t *testing.T) {
+	ev := &nylas.Event{
+		ID:             "evt-multi-recur",
+		Title:          "Complex Recurrence",
+		Status:         "confirmed",
+		RecurrenceRule: []string{"RRULE:FREQ=WEEKLY", "EXDATE:20240101"},
+		When: nylas.EventWhen{
+			Object:    "timespan",
+			StartTime: 1704067200,
+			EndTime:   1704070800,
+		},
+	}
+
+	params, err := NormalizeEvent(1, ev)
+	if err != nil {
+		t.Fatalf("NormalizeEvent failed: %v", err)
+	}
+
+	if !params.RecurrenceRule.Valid {
+		t.Fatal("RecurrenceRule should be valid")
+	}
+	want := "RRULE:FREQ=WEEKLY\nEXDATE:20240101"
+	if params.RecurrenceRule.String != want {
+		t.Errorf("RecurrenceRule = %q, want %q", params.RecurrenceRule.String, want)
+	}
+}
+
 func TestNormalizeEvent_OptionalFields(t *testing.T) {
 	// Empty optional fields
 	ev := &nylas.Event{

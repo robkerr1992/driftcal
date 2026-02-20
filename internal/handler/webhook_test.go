@@ -122,7 +122,7 @@ func TestWebhook_EventCreated(t *testing.T) {
 			EndTime:   1704070800,
 		},
 	}
-	eventJSON, _ := json.Marshal(eventObj)
+	eventJSON := mustMarshal(t, eventObj)
 
 	payload := map[string]any{
 		"type": "event.created",
@@ -130,7 +130,7 @@ func TestWebhook_EventCreated(t *testing.T) {
 			"object": json.RawMessage(eventJSON),
 		},
 	}
-	body, _ := json.Marshal(payload)
+	body := mustMarshal(t, payload)
 
 	req := httptest.NewRequest(http.MethodPost, "/api/webhooks/nylas", strings.NewReader(string(body)))
 	req.Header.Set("X-Nylas-Signature", signPayload(body))
@@ -184,7 +184,7 @@ func TestWebhook_EventUpdated(t *testing.T) {
 			EndTime:   1704070800,
 		},
 	}
-	eventJSON, _ := json.Marshal(eventObj)
+	eventJSON := mustMarshal(t, eventObj)
 
 	payload := map[string]any{
 		"type": "event.updated",
@@ -192,7 +192,7 @@ func TestWebhook_EventUpdated(t *testing.T) {
 			"object": json.RawMessage(eventJSON),
 		},
 	}
-	body, _ := json.Marshal(payload)
+	body := mustMarshal(t, payload)
 
 	req := httptest.NewRequest(http.MethodPost, "/api/webhooks/nylas", strings.NewReader(string(body)))
 	req.Header.Set("X-Nylas-Signature", signPayload(body))
@@ -239,7 +239,7 @@ func TestWebhook_EventDeleted(t *testing.T) {
 			"object": json.RawMessage(`{"id":"evt-wh-del"}`),
 		},
 	}
-	body, _ := json.Marshal(payload)
+	body := mustMarshal(t, payload)
 
 	req := httptest.NewRequest(http.MethodPost, "/api/webhooks/nylas", strings.NewReader(string(body)))
 	req.Header.Set("X-Nylas-Signature", signPayload(body))
@@ -266,12 +266,18 @@ func TestWebhook_OversizedBody(t *testing.T) {
 
 	h := NylasWebhook(webhookSecret, mock, q, log)
 
+	// Wrap in MaxBytesReader to simulate the global body limit middleware
+	limited := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		r.Body = http.MaxBytesReader(w, r.Body, 1<<20) // 1MB
+		h.ServeHTTP(w, r)
+	})
+
 	// Create a body larger than 1MB
 	bigBody := strings.Repeat("x", 2<<20)
 	req := httptest.NewRequest(http.MethodPost, "/api/webhooks/nylas", strings.NewReader(bigBody))
 	req.Header.Set("X-Nylas-Signature", "doesnt-matter")
 	rec := httptest.NewRecorder()
-	h.ServeHTTP(rec, req)
+	limited.ServeHTTP(rec, req)
 
 	if rec.Code != http.StatusRequestEntityTooLarge {
 		t.Fatalf("status = %d, want %d", rec.Code, http.StatusRequestEntityTooLarge)
@@ -310,7 +316,7 @@ func TestWebhook_UnknownEventType(t *testing.T) {
 			"object": json.RawMessage(`{"id":"grant-123"}`),
 		},
 	}
-	body, _ := json.Marshal(payload)
+	body := mustMarshal(t, payload)
 
 	req := httptest.NewRequest(http.MethodPost, "/api/webhooks/nylas", strings.NewReader(string(body)))
 	req.Header.Set("X-Nylas-Signature", signPayload(body))
@@ -341,7 +347,7 @@ func TestWebhook_EventForUnknownCalendar(t *testing.T) {
 			EndTime:   1704070800,
 		},
 	}
-	eventJSON, _ := json.Marshal(eventObj)
+	eventJSON := mustMarshal(t, eventObj)
 
 	payload := map[string]any{
 		"type": "event.created",
@@ -349,7 +355,7 @@ func TestWebhook_EventForUnknownCalendar(t *testing.T) {
 			"object": json.RawMessage(eventJSON),
 		},
 	}
-	body, _ := json.Marshal(payload)
+	body := mustMarshal(t, payload)
 
 	req := httptest.NewRequest(http.MethodPost, "/api/webhooks/nylas", strings.NewReader(string(body)))
 	req.Header.Set("X-Nylas-Signature", signPayload(body))
@@ -386,4 +392,46 @@ func mustParseTime(s string) time.Time {
 		panic(err)
 	}
 	return t
+}
+
+func mustMarshal(t *testing.T, v any) []byte {
+	t.Helper()
+	data, err := json.Marshal(v)
+	if err != nil {
+		t.Fatalf("marshaling test data: %v", err)
+	}
+	return data
+}
+
+func TestWebhook_OversizedChallenge(t *testing.T) {
+	q, _ := setupWebhookTestDB(t)
+	mock := &mockNylasEventService{}
+	log := zerolog.Nop()
+
+	h := NylasWebhook(webhookSecret, mock, q, log)
+
+	bigChallenge := strings.Repeat("a", 257)
+	req := httptest.NewRequest(http.MethodGet, "/api/webhooks/nylas?challenge="+bigChallenge, nil)
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusBadRequest)
+	}
+}
+
+func TestWebhook_InvalidChallengeChars(t *testing.T) {
+	q, _ := setupWebhookTestDB(t)
+	mock := &mockNylasEventService{}
+	log := zerolog.Nop()
+
+	h := NylasWebhook(webhookSecret, mock, q, log)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/webhooks/nylas?challenge=%3Cscript%3E", nil)
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want %d for challenge with special chars", rec.Code, http.StatusBadRequest)
+	}
 }

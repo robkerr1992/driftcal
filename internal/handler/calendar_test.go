@@ -122,6 +122,41 @@ func TestUpdateCalendar_NotFound(t *testing.T) {
 	}
 }
 
+func TestUpdateCalendar_NoChanges(t *testing.T) {
+	db := database.TestDB(t)
+	q := sqlcdb.New(db)
+	log := zerolog.Nop()
+
+	account := createTestAccount(t, q)
+	cal := createTestCalendar(t, q, account.ID)
+
+	h := UpdateCalendar(q, log)
+
+	r := chi.NewRouter()
+	r.Patch("/api/calendars/{id}", h)
+
+	// Send empty JSON body
+	req := httptest.NewRequest(http.MethodPatch, "/api/calendars/"+strconv.FormatInt(cal.ID, 10), strings.NewReader(`{}`))
+	rec := httptest.NewRecorder()
+	r.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d, body: %s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+
+	var updated sqlcdb.Calendar
+	if err := json.NewDecoder(rec.Body).Decode(&updated); err != nil {
+		t.Fatalf("decoding response: %v", err)
+	}
+	// Default values should be preserved
+	if updated.IsBlocking != cal.IsBlocking {
+		t.Errorf("IsBlocking changed: got %v, want %v", updated.IsBlocking, cal.IsBlocking)
+	}
+	if updated.IsActive != cal.IsActive {
+		t.Errorf("IsActive changed: got %v, want %v", updated.IsActive, cal.IsActive)
+	}
+}
+
 func TestUpdateCalendar_InvalidBody(t *testing.T) {
 	db := database.TestDB(t)
 	q := sqlcdb.New(db)

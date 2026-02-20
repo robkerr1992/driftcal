@@ -26,7 +26,11 @@ func NormalizeEvent(calendarID int64, ev *nylas.Event) (sqlcdb.UpsertEventParams
 
 	busy := "free"
 	if ev.Busy {
-		busy = "busy"
+		if ev.Status == "tentative" {
+			busy = "tentative"
+		} else {
+			busy = "busy"
+		}
 	}
 
 	status := normalizeStatus(ev.Status)

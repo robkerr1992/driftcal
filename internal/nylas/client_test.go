@@ -12,7 +12,7 @@ import (
 
 func TestAuthURL(t *testing.T) {
 	c := New("client-123", "api-key")
-	got := c.AuthURL("https://example.com/callback", "google")
+	got := c.AuthURL("https://example.com/callback", "google", "test-state-123")
 
 	if !strings.Contains(got, "client_id=client-123") {
 		t.Errorf("AuthURL missing client_id, got %s", got)
@@ -22,6 +22,9 @@ func TestAuthURL(t *testing.T) {
 	}
 	if !strings.Contains(got, "redirect_uri=") {
 		t.Errorf("AuthURL missing redirect_uri, got %s", got)
+	}
+	if !strings.Contains(got, "state=test-state-123") {
+		t.Errorf("AuthURL missing state, got %s", got)
 	}
 	if !strings.HasPrefix(got, defaultBaseURL) {
 		t.Errorf("AuthURL should start with base URL, got %s", got)
@@ -232,6 +235,27 @@ func TestGetEvent_Error(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "404") {
 		t.Errorf("error should mention status code, got: %v", err)
+	}
+}
+
+func TestDo_ResponseTooLarge(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Write more than 10MB
+		w.WriteHeader(http.StatusOK)
+		buf := make([]byte, 1<<20) // 1MB chunk
+		for i := 0; i < 11; i++ {
+			w.Write(buf)
+		}
+	}))
+	defer srv.Close()
+
+	c := NewWithBaseURL("client-123", "api-key", srv.URL)
+	_, err := c.ListCalendars(context.Background(), "grant-abc")
+	if err == nil {
+		t.Fatal("expected error for oversized response")
+	}
+	if !strings.Contains(err.Error(), "exceeded") {
+		t.Errorf("error should mention exceeded, got: %v", err)
 	}
 }
 

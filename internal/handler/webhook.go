@@ -9,6 +9,7 @@ import (
 	"errors"
 	"io"
 	"net/http"
+	"regexp"
 
 	"github.com/rs/zerolog"
 
@@ -16,6 +17,12 @@ import (
 	"github.com/robkerr1992/driftcal/internal/nylas"
 	syncpkg "github.com/robkerr1992/driftcal/internal/sync"
 )
+
+var challengePattern = regexp.MustCompile(`^[a-zA-Z0-9_-]+$`)
+
+func isValidChallenge(s string) bool {
+	return challengePattern.MatchString(s)
+}
 
 // NylasEventService defines the Nylas operations needed by the webhook handler.
 type NylasEventService interface {
@@ -29,7 +36,7 @@ func NylasWebhook(secret string, nc NylasEventService, q *sqlcdb.Queries, log ze
 	return func(w http.ResponseWriter, r *http.Request) {
 		// Handle Nylas challenge handshake (GET with ?challenge=xxx)
 		if challenge := r.URL.Query().Get("challenge"); challenge != "" {
-			if len(challenge) > 256 {
+			if len(challenge) > 256 || !isValidChallenge(challenge) {
 				http.Error(w, "invalid challenge", http.StatusBadRequest)
 				return
 			}
@@ -38,9 +45,6 @@ func NylasWebhook(secret string, nc NylasEventService, q *sqlcdb.Queries, log ze
 			w.Write([]byte(challenge))
 			return
 		}
-
-		// Limit body size to 1MB
-		r.Body = http.MaxBytesReader(w, r.Body, 1<<20)
 
 		body, err := io.ReadAll(r.Body)
 		if err != nil {

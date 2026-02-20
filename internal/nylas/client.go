@@ -10,6 +10,8 @@ import (
 	"net/url"
 	"strconv"
 	"time"
+
+	"golang.org/x/time/rate"
 )
 
 const defaultBaseURL = "https://api.us.nylas.com"
@@ -20,6 +22,7 @@ type Client struct {
 	apiKey   string
 	http     *http.Client
 	baseURL  string
+	limiter  *rate.Limiter
 }
 
 // New creates a Nylas client configured for the production API.
@@ -29,6 +32,7 @@ func New(clientID, apiKey string) *Client {
 		apiKey:   apiKey,
 		http:     &http.Client{Timeout: 30 * time.Second},
 		baseURL:  defaultBaseURL,
+		limiter:  rate.NewLimiter(rate.Limit(5), 1), // 5 req/s, burst 1
 	}
 }
 
@@ -41,12 +45,13 @@ func NewWithBaseURL(clientID, apiKey, baseURL string) *Client {
 
 // AuthURL returns the Nylas hosted authentication URL that the user should
 // visit to connect their calendar account.
-func (c *Client) AuthURL(redirectURI, provider string) string {
+func (c *Client) AuthURL(redirectURI, provider, state string) string {
 	v := url.Values{
-		"client_id":    {c.clientID},
-		"redirect_uri": {redirectURI},
-		"provider":     {provider},
+		"client_id":     {c.clientID},
+		"redirect_uri":  {redirectURI},
+		"provider":      {provider},
 		"response_type": {"code"},
+		"state":         {state},
 	}
 	return c.baseURL + "/v3/connect/auth?" + v.Encode()
 }
@@ -158,6 +163,10 @@ func (c *Client) post(ctx context.Context, path string, body, dest any) error {
 
 // do executes the request with auth headers and handles response parsing.
 func (c *Client) do(req *http.Request, dest any) error {
+	if err := c.limiter.Wait(req.Context()); err != nil {
+		return fmt.Errorf("rate limiter: %w", err)
+	}
+
 	req.Header.Set("Authorization", "Bearer "+c.apiKey)
 	req.Header.Set("Accept", "application/json")
 
@@ -168,9 +177,12 @@ func (c *Client) do(req *http.Request, dest any) error {
 	defer resp.Body.Close()
 
 	const maxResponseBytes = 10 << 20 // 10 MB
-	respBody, err := io.ReadAll(io.LimitReader(resp.Body, maxResponseBytes))
+	respBody, err := io.ReadAll(io.LimitReader(resp.Body, maxResponseBytes+1))
 	if err != nil {
 		return fmt.Errorf("reading response body: %w", err)
+	}
+	if int64(len(respBody)) > maxResponseBytes {
+		return fmt.Errorf("response body exceeded %d bytes", maxResponseBytes)
 	}
 
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {

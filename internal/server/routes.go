@@ -22,6 +22,7 @@ func (s *Server) routes() http.Handler {
 	r.Use(requestLogger(s.log))
 	r.Use(middleware.Recoverer)
 	r.Use(middleware.Timeout(60 * time.Second))
+	r.Use(authmw.MaxBodySize(1 << 20)) // 1MB default
 
 	// Health check (unauthenticated)
 	r.Get("/health", handler.Health(s.db, s.startTime, s.log))

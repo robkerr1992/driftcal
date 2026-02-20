@@ -27,7 +27,7 @@ type mockNylasAccountService struct {
 	calendarsErr error
 }
 
-func (m *mockNylasAccountService) AuthURL(redirectURI, provider string) string {
+func (m *mockNylasAccountService) AuthURL(redirectURI, provider, state string) string {
 	return m.authURL
 }
 
@@ -118,7 +118,10 @@ func TestAccountCallback_Success(t *testing.T) {
 
 	h := AccountCallback(mock, "https://example.com", q, log)
 
-	req := httptest.NewRequest(http.MethodGet, "/api/accounts/callback?code=auth-code-xyz", nil)
+	state := "test-state-success"
+	storeState(state)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/accounts/callback?code=auth-code-xyz&state="+state, nil)
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
 
@@ -165,7 +168,10 @@ func TestAccountCallback_ExchangeError(t *testing.T) {
 
 	h := AccountCallback(mock, "https://example.com", q, log)
 
-	req := httptest.NewRequest(http.MethodGet, "/api/accounts/callback?code=bad", nil)
+	state := "test-state-exchange-err"
+	storeState(state)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/accounts/callback?code=bad&state="+state, nil)
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
 
@@ -189,7 +195,10 @@ func TestAccountCallback_CalendarFetchFails(t *testing.T) {
 
 	h := AccountCallback(mock, "https://example.com", q, log)
 
-	req := httptest.NewRequest(http.MethodGet, "/api/accounts/callback?code=code1", nil)
+	state := "test-state-cal-fail"
+	storeState(state)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/accounts/callback?code=code1&state="+state, nil)
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
 
@@ -230,7 +239,9 @@ func TestAccountCallback_DuplicateGrant(t *testing.T) {
 	h := AccountCallback(mock, "https://example.com", q, log)
 
 	// First call: creates account
-	req := httptest.NewRequest(http.MethodGet, "/api/accounts/callback?code=code1", nil)
+	state1 := "test-state-dup-1"
+	storeState(state1)
+	req := httptest.NewRequest(http.MethodGet, "/api/accounts/callback?code=code1&state="+state1, nil)
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
 	if rec.Code != http.StatusCreated {
@@ -238,7 +249,9 @@ func TestAccountCallback_DuplicateGrant(t *testing.T) {
 	}
 
 	// Second call: duplicate grant_id → 409
-	req = httptest.NewRequest(http.MethodGet, "/api/accounts/callback?code=code2", nil)
+	state2 := "test-state-dup-2"
+	storeState(state2)
+	req = httptest.NewRequest(http.MethodGet, "/api/accounts/callback?code=code2&state="+state2, nil)
 	rec = httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
 	if rec.Code != http.StatusConflict {
@@ -351,5 +364,76 @@ func TestDisconnectAccount_NotFound(t *testing.T) {
 
 	if rec.Code != http.StatusNotFound {
 		t.Fatalf("status = %d, want %d", rec.Code, http.StatusNotFound)
+	}
+}
+
+func TestAccountCallback_InvalidState(t *testing.T) {
+	mock := &mockNylasAccountService{
+		tokenResp: &nylas.TokenResponse{
+			GrantID:  "grant-state",
+			Email:    "state@example.com",
+			Provider: "google",
+		},
+	}
+	db := database.TestDB(t)
+	q := sqlcdb.New(db)
+	log := zerolog.Nop()
+
+	h := AccountCallback(mock, "https://example.com", q, log)
+
+	// No state parameter
+	req := httptest.NewRequest(http.MethodGet, "/api/accounts/callback?code=code1", nil)
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("missing state: status = %d, want %d", rec.Code, http.StatusBadRequest)
+	}
+
+	// Wrong state parameter
+	req = httptest.NewRequest(http.MethodGet, "/api/accounts/callback?code=code1&state=bogus", nil)
+	rec = httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("invalid state: status = %d, want %d", rec.Code, http.StatusBadRequest)
+	}
+}
+
+func TestAccountCallback_PartialCalendarFailure(t *testing.T) {
+	mock := &mockNylasAccountService{
+		tokenResp: &nylas.TokenResponse{
+			GrantID:  "grant-partial-cal",
+			Email:    "partial@example.com",
+			Provider: "google",
+		},
+		calendars: []nylas.Calendar{
+			{ID: "cal-unique", Name: "First Cal", HexColor: "#00ff00"},
+			{ID: "cal-unique", Name: "Duplicate Cal", HexColor: "#ff0000"}, // same nylas_calendar_id → unique constraint
+		},
+	}
+	db := database.TestDB(t)
+	q := sqlcdb.New(db)
+	log := zerolog.Nop()
+
+	h := AccountCallback(mock, "https://example.com", q, log)
+
+	state := "test-state-partial"
+	storeState(state)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/accounts/callback?code=code1&state="+state, nil)
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("status = %d, want %d, body: %s", rec.Code, http.StatusCreated, rec.Body.String())
+	}
+
+	var resp struct {
+		Calendars []json.RawMessage `json:"calendars"`
+	}
+	if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
+		t.Fatalf("decoding response: %v", err)
+	}
+	if len(resp.Calendars) != 1 {
+		t.Errorf("expected 1 calendar (second should fail unique constraint), got %d", len(resp.Calendars))
 	}
 }
