@@ -18,7 +18,7 @@ func main() {
 		log.Fatalf("config: %v", err)
 	}
 
-	logger := logging.Setup(cfg.LogLevel)
+	logger := logging.Setup(cfg.LogLevel, cfg.LogFormat)
 
 	db, err := database.Open(cfg.DBPath, logger)
 	if err != nil {

@@ -1,5 +1,9 @@
 -- +goose Up
 
+-- Convention: updated_at is managed at the application level (set explicitly
+-- in sqlc queries) rather than via database triggers. Every UPDATE query must
+-- include "updated_at = CURRENT_TIMESTAMP" for tables that have this column.
+
 -- Calendar accounts: one per Nylas grant (Google, Microsoft, iCloud)
 CREATE TABLE calendar_accounts (
     id            INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -115,7 +119,7 @@ CREATE TABLE activity_suggestions (
 
 CREATE INDEX idx_suggestions_date ON activity_suggestions(suggested_date);
 CREATE INDEX idx_suggestions_status ON activity_suggestions(status);
-CREATE UNIQUE INDEX idx_suggestions_idempotent ON activity_suggestions(suggested_date, start_time, end_time);
+CREATE UNIQUE INDEX idx_suggestions_idempotent ON activity_suggestions(suggested_date, start_time, end_time) WHERE status = 'pending';
 
 -- User feedback on suggestions (training signal for LLM)
 CREATE TABLE suggestion_feedback (

@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"net/http"
 	"time"
+
+	"github.com/rs/zerolog"
 )
 
 type healthResponse struct {
@@ -15,7 +17,7 @@ type healthResponse struct {
 
 // Health returns a handler that reports server health and database connectivity.
 // Returns 200 if healthy, 503 if the database is unreachable.
-func Health(db *sql.DB, startTime time.Time) http.HandlerFunc {
+func Health(db *sql.DB, startTime time.Time, log zerolog.Logger) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		dbStatus := "ok"
 		httpStatus := http.StatusOK
@@ -37,6 +39,8 @@ func Health(db *sql.DB, startTime time.Time) http.HandlerFunc {
 
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(httpStatus)
-		json.NewEncoder(w).Encode(resp)
+		if err := json.NewEncoder(w).Encode(resp); err != nil {
+			log.Error().Err(err).Msg("failed to encode health response")
+		}
 	}
 }

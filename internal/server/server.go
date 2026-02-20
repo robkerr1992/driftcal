@@ -3,6 +3,7 @@ package server
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"net/http"
 	"os"
 	"os/signal"
@@ -55,6 +56,9 @@ func (s *Server) Run() error {
 
 	select {
 	case err := <-serverErr:
+		if errors.Is(err, http.ErrServerClosed) {
+			return nil
+		}
 		return err
 	case sig := <-shutdown:
 		s.log.Info().Str("signal", sig.String()).Msg("shutdown signal received")

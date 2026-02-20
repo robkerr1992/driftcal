@@ -23,7 +23,7 @@ func (s *Server) routes() http.Handler {
 	r.Use(middleware.Timeout(60 * time.Second))
 
 	// Health check (unauthenticated)
-	r.Get("/health", handler.Health(s.db, s.startTime))
+	r.Get("/health", handler.Health(s.db, s.startTime, s.log))
 
 	// API routes (authentication added in later milestones)
 	r.Route("/api", func(r chi.Router) {
@@ -41,7 +41,11 @@ func requestLogger(log zerolog.Logger) func(next http.Handler) http.Handler {
 			ww := middleware.NewWrapResponseWriter(w, r.ProtoMajor)
 
 			defer func() {
-				log.Info().
+				logEvent := log.Info()
+				if r.URL.Path == "/health" {
+					logEvent = log.Debug()
+				}
+				logEvent.
 					Str("method", r.Method).
 					Str("path", r.URL.Path).
 					Int("status", ww.Status()).

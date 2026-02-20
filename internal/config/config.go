@@ -3,6 +3,7 @@ package config
 import (
 	"fmt"
 	"os"
+	"strconv"
 
 	"github.com/joho/godotenv"
 )
@@ -37,7 +38,8 @@ type Config struct {
 	OpenWeatherAPIKey string
 
 	// Logging
-	LogLevel string
+	LogLevel  string
+	LogFormat string
 }
 
 // Load reads configuration from environment variables, optionally loading
@@ -62,10 +64,15 @@ func Load() (*Config, error) {
 		TelegramWebhookSecret:   os.Getenv("TELEGRAM_WEBHOOK_SECRET"),
 		OpenWeatherAPIKey:       os.Getenv("OPENWEATHER_API_KEY"),
 		LogLevel:                envOrDefault("DRIFTCAL_LOG_LEVEL", "info"),
+		LogFormat:               envOrDefault("DRIFTCAL_LOG_FORMAT", "console"),
 	}
 
 	if cfg.APIKey == "" {
 		return nil, fmt.Errorf("DRIFTCAL_API_KEY is required")
+	}
+
+	if _, err := strconv.Atoi(cfg.Port); err != nil {
+		return nil, fmt.Errorf("DRIFTCAL_PORT must be numeric, got %q", cfg.Port)
 	}
 
 	return cfg, nil
