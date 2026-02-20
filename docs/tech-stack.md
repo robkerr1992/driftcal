@@ -100,3 +100,51 @@ github.com/rs/zerolog              # Structured logging
 | **goose** | Database migration management |
 | **golangci-lint** | Linting and static analysis |
 | **Taskfile** | Task runner (Makefile alternative) |
+
+## Testing Strategy
+
+### Unit Tests
+
+| Package | What to Test | Approach |
+|---------|-------------|----------|
+| `gap` | Gap detection algorithm | Table-driven tests with edge cases: overlapping events, all-day events, DST transitions, midnight-spanning events, empty schedules |
+| `goal` | Goal scheduling logic | Table-driven tests: constrained days, priority ordering, weekly fulfillment tracking, no-fit scenarios |
+| `suggest` | Prompt building, response parsing | Verify prompt template renders correctly with various inputs. Mock Claude API for response parsing. |
+| `sync` | Event normalization | Verify Nylas event → internal Event mapping for each provider's quirks |
+| `notify` | Digest formatting, callback parsing | Verify Telegram message format, callback data encoding/decoding |
+
+### Integration Tests
+
+| Scope | What to Test | Approach |
+|-------|-------------|----------|
+| Daily pipeline | Full sync → gaps → enrich → goals → suggest chain | In-memory SQLite + mocked external APIs (Nylas, Claude, OpenWeather). Verify pipeline run status, gap persistence, suggestion creation. |
+| Webhook handling | Nylas and Telegram webhook processing | HTTP test server, verify signature validation, event upsert, callback actions. |
+| API endpoints | REST API contract compliance | HTTP test client against real chi router with in-memory SQLite. Verify request/response shapes, status codes, error format. |
+
+### Test Infrastructure
+
+- **Framework**: Go's built-in `testing` package + `testify/assert` for readability
+- **Database**: In-memory SQLite (`:memory:`) for fast, isolated test runs. Migrations applied via goose in `TestMain`.
+- **External services**: All external dependencies are behind Go interfaces (`CalendarSyncService`, `NotificationSender`, `SuggestionGenerator`). Tests use mock implementations.
+- **CI**: `golangci-lint` + `go test ./...` on every commit. No code merges with failing tests.
+- **Coverage target**: 80%+ on `gap`, `goal`, and `suggest` packages (core logic). No coverage target on HTTP handlers or external API clients.
+
+### Key Test Cases (Gap Detection)
+
+These must pass before the gap engine is considered complete:
+
+```
+TestGapDetection_NoEvents                → full active hours as one gap
+TestGapDetection_SingleEvent             → two gaps (before + after)
+TestGapDetection_OverlappingEvents       → merged into one block
+TestGapDetection_AllDayBusyEvent         → no gaps for that day
+TestGapDetection_AllDayFreeEvent         → full active hours (ignored)
+TestGapDetection_TentativeEvent          → treated as blocking
+TestGapDetection_CancelledEvent          → ignored (not blocking)
+TestGapDetection_EventSpansMidnight      → split at day boundary
+TestGapDetection_EventExceedsActiveHours → clamped to active window
+TestGapDetection_GapTooShort             → filtered out (< min_gap_minutes)
+TestGapDetection_ProtectedBlock          → excluded from available gaps
+TestGapDetection_DSTTransition           → active hours shift correctly
+TestGapDetection_MultiDayEvent           → blocks each day independently
+```

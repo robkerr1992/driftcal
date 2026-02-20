@@ -71,6 +71,7 @@ Low energy evening. That pu-erh sampler is still unopened.
 | [Cron Jobs](docs/cron-jobs.md) | Scheduled tasks and timing |
 | [Roadmap](docs/roadmap.md) | Phased implementation plan |
 | [Research](docs/research.md) | Market research and alternatives evaluated |
+| [Setup](docs/setup.md) | First-run setup, onboarding, environment variables |
 
 ## Quick Start
 
@@ -87,10 +88,15 @@ go run ./cmd/driftcal
 
 ## Cost
 
-~$10/month total:
+~$7/month total:
 - $5 VPS (Hetzner/Fly.io)
-- ~$3 Claude API calls (~1 batch call/day)
+- ~$0.50 Claude API calls (~1 batch call/day via Sonnet)
+- ~$1 Domain name (amortized)
 - $0 Nylas free tier (up to 5 connected accounts)
+- $0 OpenWeather free tier
+- $0 Telegram Bot API
+
+See [Research](docs/research.md) for detailed cost breakdown.
 
 ## License
 

@@ -16,7 +16,13 @@ https://driftcal.yourdomain.com/api
 Authorization: Bearer <API_KEY>
 ```
 
-The API key is set via the `DRIFTCAL_API_KEY` environment variable. Webhook endpoints use their own signature verification (Nylas HMAC, Telegram secret token).
+DriftCal is a **single-user system**. Authentication uses a **static API key** set via the `DRIFTCAL_API_KEY` environment variable. Generate it with `openssl rand -hex 32`. This key is used by:
+
+- The Vue.js frontend (Phase 2) for all API calls
+- Any manual/debugging API calls (curl, Postman)
+- The `/setup` page for initial calendar onboarding
+
+The Telegram bot communicates with the backend internally (in-process function calls, not HTTP), so it does not use this key. Webhook endpoints use their own signature verification (Nylas HMAC-SHA256, Telegram secret token) and do not require the Bearer token.
 
 ## Rate Limiting
 
@@ -262,7 +268,9 @@ List activity suggestions.
 
 Approve a suggestion and create a calendar event. **Before creating the event, the server re-checks the time slot via Nylas** to ensure the calendar hasn't changed since the suggestion was generated.
 
-**Request** (optional edits)
+**Target calendar:** The event is created on the calendar specified by `calendar_id` in the request body. If omitted, the event is created on the user's **default calendar** (set via the `default_calendar_id` user preference — see [Setup](setup.md)). If no default is configured, returns `422 Unprocessable` with a message asking the user to set a default calendar.
+
+**Request** (optional overrides)
 ```json
 {
   "calendar_id": 1,
@@ -304,7 +312,9 @@ Reject a suggestion.
 
 #### `POST /api/suggestions/generate`
 
-Manually trigger suggestion generation for a date (bypasses cron).
+Manually trigger suggestion generation for a date (bypasses cron). **Regeneration behavior:** any existing suggestions for the target date with status `pending` are soft-deleted (status set to `expired`) before generating new ones. Suggestions with status `approved` or `rejected` are preserved — they are part of the feedback history.
+
+This shares a rate limit with the Telegram `/regenerate` command: **1 request per hour** across both interfaces (single counter).
 
 **Request**
 ```json

@@ -292,6 +292,8 @@ CREATE UNIQUE INDEX idx_suggestions_idempotent ON activity_suggestions(suggested
 
 The unique index on `(suggested_date, start_time, end_time)` prevents duplicate suggestions if the pipeline runs twice for the same date.
 
+**Regeneration behavior:** When the user triggers `/regenerate` or `POST /api/suggestions/generate`, existing suggestions for the target date with status `pending` are set to `expired` before new ones are generated. This clears the unique index constraint for the new batch. Suggestions with status `approved` or `rejected` are preserved — they are part of the feedback history and won't conflict because the pipeline only generates suggestions for gaps that don't already have approved events.
+
 ### SuggestionFeedback
 
 Tracks user actions on suggestions. Used as training signal for LLM prompt context.
