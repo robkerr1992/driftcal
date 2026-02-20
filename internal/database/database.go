@@ -12,6 +12,31 @@ import (
 	_ "modernc.org/sqlite"
 )
 
+// applyPragmas sets shared SQLite pragmas on a connection. When skipWAL is
+// true, journal_mode and cache_size are omitted (in-memory DBs don't support WAL).
+func applyPragmas(db *sql.DB, skipWAL bool) error {
+	pragmas := []string{
+		"PRAGMA busy_timeout=5000",
+		"PRAGMA synchronous=NORMAL",
+		"PRAGMA foreign_keys=ON",
+		"PRAGMA temp_store=MEMORY",
+	}
+
+	if !skipWAL {
+		pragmas = append([]string{
+			"PRAGMA journal_mode=WAL",
+			"PRAGMA cache_size=20000",
+		}, pragmas...)
+	}
+
+	for _, p := range pragmas {
+		if _, err := db.Exec(p); err != nil {
+			return fmt.Errorf("setting pragma %q: %w", p, err)
+		}
+	}
+	return nil
+}
+
 // Open creates a SQLite connection with WAL mode and recommended pragmas.
 func Open(dbPath string, log zerolog.Logger) (*sql.DB, error) {
 	db, err := sql.Open("sqlite", dbPath)
@@ -19,21 +44,9 @@ func Open(dbPath string, log zerolog.Logger) (*sql.DB, error) {
 		return nil, fmt.Errorf("opening database: %w", err)
 	}
 
-	// WAL mode + performance pragmas for a single-user SQLite setup
-	pragmas := []string{
-		"PRAGMA journal_mode=WAL",
-		"PRAGMA busy_timeout=5000",
-		"PRAGMA synchronous=NORMAL",
-		"PRAGMA cache_size=20000",
-		"PRAGMA foreign_keys=ON",
-		"PRAGMA temp_store=MEMORY",
-	}
-
-	for _, p := range pragmas {
-		if _, err := db.Exec(p); err != nil {
-			db.Close()
-			return nil, fmt.Errorf("setting pragma %q: %w", p, err)
-		}
+	if err := applyPragmas(db, false); err != nil {
+		db.Close()
+		return nil, err
 	}
 
 	log.Info().Str("path", dbPath).Msg("database opened")
@@ -57,6 +70,11 @@ func Migrate(db *sql.DB, migrationsFS fs.FS, log zerolog.Logger) error {
 		return fmt.Errorf("running migrations: %w", err)
 	}
 
-	log.Info().Msg("migrations applied")
+	version, err := goose.GetDBVersion(db)
+	if err != nil {
+		return fmt.Errorf("getting migration version: %w", err)
+	}
+
+	log.Info().Int64("version", version).Msg("migrations applied")
 	return nil
 }

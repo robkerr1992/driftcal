@@ -12,6 +12,8 @@ import (
 
 // TestDB opens an in-memory SQLite database with pragmas and migrations applied.
 // It registers t.Cleanup to close the database when the test finishes.
+// MaxOpenConns is set to 1 because in-memory SQLite is per-connection —
+// a second connection would see an empty database.
 func TestDB(t *testing.T) *sql.DB {
 	t.Helper()
 
@@ -21,19 +23,11 @@ func TestDB(t *testing.T) *sql.DB {
 	if err != nil {
 		t.Fatalf("opening test database: %v", err)
 	}
+	db.SetMaxOpenConns(1)
 	t.Cleanup(func() { db.Close() })
 
-	// Apply pragmas (skip WAL for in-memory)
-	pragmas := []string{
-		"PRAGMA busy_timeout=5000",
-		"PRAGMA synchronous=NORMAL",
-		"PRAGMA foreign_keys=ON",
-		"PRAGMA temp_store=MEMORY",
-	}
-	for _, p := range pragmas {
-		if _, err := db.Exec(p); err != nil {
-			t.Fatalf("setting pragma %q: %v", p, err)
-		}
+	if err := applyPragmas(db, true); err != nil {
+		t.Fatalf("applying pragmas: %v", err)
 	}
 
 	migrationsFS, err := fs.Sub(dbpkg.Migrations, "migrations")

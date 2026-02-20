@@ -41,9 +41,17 @@ func requestLogger(log zerolog.Logger) func(next http.Handler) http.Handler {
 			ww := middleware.NewWrapResponseWriter(w, r.ProtoMajor)
 
 			defer func() {
-				logEvent := log.Info()
-				if r.URL.Path == "/health" {
+				status := ww.Status()
+				var logEvent *zerolog.Event
+				switch {
+				case r.URL.Path == "/health":
 					logEvent = log.Debug()
+				case status >= 500:
+					logEvent = log.Error()
+				case status >= 400:
+					logEvent = log.Warn()
+				default:
+					logEvent = log.Info()
 				}
 				logEvent.
 					Str("method", r.Method).

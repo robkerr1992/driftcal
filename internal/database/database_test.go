@@ -27,8 +27,10 @@ func TestOpen_SetsPragmas(t *testing.T) {
 	}{
 		{"PRAGMA journal_mode", "wal"},
 		{"PRAGMA foreign_keys", "1"},
-		{"PRAGMA synchronous", "1"}, // NORMAL = 1
-		{"PRAGMA temp_store", "2"},  // MEMORY = 2
+		{"PRAGMA synchronous", "1"},    // NORMAL = 1
+		{"PRAGMA temp_store", "2"},     // MEMORY = 2
+		{"PRAGMA busy_timeout", "5000"},
+		{"PRAGMA cache_size", "20000"},
 	}
 
 	for _, c := range checks {
