@@ -19,10 +19,10 @@ func ListCalendars(q *sqlcdb.Queries, log zerolog.Logger) http.HandlerFunc {
 		calendars, err := q.ListCalendars(r.Context())
 		if err != nil {
 			log.Error().Err(err).Msg("failed to list calendars")
-			RespondError(w, http.StatusInternalServerError, "internal_error", "failed to list calendars")
+			RespondError(w, http.StatusInternalServerError, "internal_error", "failed to list calendars", log)
 			return
 		}
-		RespondJSON(w, http.StatusOK, calendars)
+		RespondJSON(w, http.StatusOK, calendars, log)
 	}
 }
 
@@ -32,7 +32,7 @@ func UpdateCalendar(q *sqlcdb.Queries, log zerolog.Logger) http.HandlerFunc {
 		idStr := chi.URLParam(r, "id")
 		id, err := strconv.ParseInt(idStr, 10, 64)
 		if err != nil {
-			RespondError(w, http.StatusBadRequest, "bad_request", "invalid calendar ID")
+			RespondError(w, http.StatusBadRequest, "bad_request", "invalid calendar ID", log)
 			return
 		}
 
@@ -41,7 +41,7 @@ func UpdateCalendar(q *sqlcdb.Queries, log zerolog.Logger) http.HandlerFunc {
 			IsActive   *bool `json:"is_active"`
 		}
 		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
-			RespondError(w, http.StatusBadRequest, "bad_request", "invalid JSON body")
+			RespondError(w, http.StatusBadRequest, "bad_request", "invalid JSON body", log)
 			return
 		}
 
@@ -50,11 +50,11 @@ func UpdateCalendar(q *sqlcdb.Queries, log zerolog.Logger) http.HandlerFunc {
 		cal, err := q.GetCalendarByID(ctx, id)
 		if err != nil {
 			if errors.Is(err, sql.ErrNoRows) {
-				RespondError(w, http.StatusNotFound, "not_found", "calendar not found")
+				RespondError(w, http.StatusNotFound, "not_found", "calendar not found", log)
 				return
 			}
 			log.Error().Err(err).Int64("id", id).Msg("failed to get calendar")
-			RespondError(w, http.StatusInternalServerError, "internal_error", "failed to get calendar")
+			RespondError(w, http.StatusInternalServerError, "internal_error", "failed to get calendar", log)
 			return
 		}
 
@@ -73,7 +73,7 @@ func UpdateCalendar(q *sqlcdb.Queries, log zerolog.Logger) http.HandlerFunc {
 			ID:         id,
 		}); err != nil {
 			log.Error().Err(err).Int64("id", id).Msg("failed to update calendar flags")
-			RespondError(w, http.StatusInternalServerError, "internal_error", "failed to update calendar")
+			RespondError(w, http.StatusInternalServerError, "internal_error", "failed to update calendar", log)
 			return
 		}
 
@@ -81,9 +81,9 @@ func UpdateCalendar(q *sqlcdb.Queries, log zerolog.Logger) http.HandlerFunc {
 		updated, err := q.GetCalendarByID(ctx, id)
 		if err != nil {
 			log.Error().Err(err).Int64("id", id).Msg("failed to fetch updated calendar")
-			RespondError(w, http.StatusInternalServerError, "internal_error", "failed to fetch updated calendar")
+			RespondError(w, http.StatusInternalServerError, "internal_error", "failed to fetch updated calendar", log)
 			return
 		}
-		RespondJSON(w, http.StatusOK, updated)
+		RespondJSON(w, http.StatusOK, updated, log)
 	}
 }

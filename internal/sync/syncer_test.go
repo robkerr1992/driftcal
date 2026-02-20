@@ -94,7 +94,7 @@ func TestSyncAll_UpsertsExisting(t *testing.T) {
 	log := zerolog.Nop()
 
 	// Pre-insert an event
-	q.UpsertEvent(context.Background(), sqlcdb.UpsertEventParams{
+	if _, err := q.UpsertEvent(context.Background(), sqlcdb.UpsertEventParams{
 		CalendarID:   cal.ID,
 		NylasEventID: "evt-upsert",
 		Title:        sql.NullString{String: "Original", Valid: true},
@@ -103,7 +103,9 @@ func TestSyncAll_UpsertsExisting(t *testing.T) {
 		Category:     sql.NullString{String: "other", Valid: true},
 		StartTime:    time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC),
 		EndTime:      time.Date(2024, 1, 1, 1, 0, 0, 0, time.UTC),
-	})
+	}); err != nil {
+		t.Fatalf("pre-inserting event: %v", err)
+	}
 
 	fetcher := &mockFetcher{
 		events: map[string][]nylas.Event{
@@ -180,19 +182,14 @@ func TestSyncAll_PartialFailure(t *testing.T) {
 		Name:            "Fail Calendar",
 	})
 
-	fetcher := &mockFetcher{
+	// Use a fetcher that fails for one calendar
+	failFetcher := &selectiveFetcher{
 		events: map[string][]nylas.Event{
 			"cal-ok": {{
 				ID: "evt-ok", Title: "OK Event", Status: "confirmed", Busy: true,
 				When: nylas.EventWhen{Object: "timespan", StartTime: 1704067200, EndTime: 1704070800},
 			}},
 		},
-		// Returning error would affect all calendars, so we use a custom fetcher
-	}
-
-	// Use a fetcher that fails for one calendar
-	failFetcher := &selectiveFetcher{
-		events: fetcher.events,
 		failCalendar: "cal-fail",
 	}
 
@@ -239,16 +236,22 @@ func TestSyncer_StartStop(t *testing.T) {
 	s := New(fetcher, q, log, 50*time.Millisecond)
 	s.Start()
 
-	// Give the initial sync time to run
-	time.Sleep(100 * time.Millisecond)
-
-	s.Stop()
-
-	// Verify the initial sync ran
-	_, err := q.GetEventByNylasID(context.Background(), "evt-lifecycle")
-	if err != nil {
-		t.Errorf("initial sync should have inserted event: %v", err)
+	// Poll for the expected event with a timeout instead of a fixed sleep
+	deadline := time.After(2 * time.Second)
+	ticker := time.NewTicker(10 * time.Millisecond)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-deadline:
+			t.Fatal("timed out waiting for initial sync")
+		case <-ticker.C:
+			if _, err := q.GetEventByNylasID(context.Background(), "evt-lifecycle"); err == nil {
+				goto synced
+			}
+		}
 	}
+synced:
+	s.Stop()
 }
 
 func TestSyncer_StopWithoutStart(t *testing.T) {
@@ -284,5 +287,33 @@ func TestSyncAccount_FiltersGrant(t *testing.T) {
 	_, err = q.GetEventByNylasID(context.Background(), "evt-account")
 	if err != nil {
 		t.Errorf("event should be synced for matching grant: %v", err)
+	}
+}
+
+func TestSyncAccount_NonMatchingGrant(t *testing.T) {
+	q, _, _ := setupSyncerTestDB(t)
+	log := zerolog.Nop()
+
+	fetcher := &mockFetcher{
+		events: map[string][]nylas.Event{
+			"nylas-cal-sync": {{
+				ID: "evt-should-not-appear", Title: "Ghost", Status: "confirmed",
+				When: nylas.EventWhen{Object: "timespan", StartTime: 1704067200, EndTime: 1704070800},
+			}},
+		},
+	}
+
+	s := New(fetcher, q, log, time.Hour)
+
+	// Sync a non-existent grant — should succeed with zero events
+	err := s.SyncAccount(context.Background(), "grant-nonexistent")
+	if err != nil {
+		t.Fatalf("SyncAccount should succeed for non-matching grant: %v", err)
+	}
+
+	// The event should NOT have been inserted since no calendars match
+	_, err = q.GetEventByNylasID(context.Background(), "evt-should-not-appear")
+	if err == nil {
+		t.Error("event should not be inserted for non-matching grant")
 	}
 }

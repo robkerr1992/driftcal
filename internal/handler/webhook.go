@@ -6,6 +6,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 
@@ -28,6 +29,10 @@ func NylasWebhook(secret string, nc NylasEventService, q *sqlcdb.Queries, log ze
 	return func(w http.ResponseWriter, r *http.Request) {
 		// Handle Nylas challenge handshake (GET with ?challenge=xxx)
 		if challenge := r.URL.Query().Get("challenge"); challenge != "" {
+			if len(challenge) > 256 {
+				http.Error(w, "invalid challenge", http.StatusBadRequest)
+				return
+			}
 			w.Header().Set("Content-Type", "text/plain")
 			w.WriteHeader(http.StatusOK)
 			w.Write([]byte(challenge))
@@ -39,8 +44,13 @@ func NylasWebhook(secret string, nc NylasEventService, q *sqlcdb.Queries, log ze
 
 		body, err := io.ReadAll(r.Body)
 		if err != nil {
-			log.Warn().Err(err).Msg("failed to read webhook body")
-			RespondError(w, http.StatusRequestEntityTooLarge, "body_too_large", "request body too large")
+			var maxBytesErr *http.MaxBytesError
+			if errors.As(err, &maxBytesErr) {
+				RespondError(w, http.StatusRequestEntityTooLarge, "body_too_large", "request body too large", log)
+			} else {
+				log.Error().Err(err).Msg("failed to read webhook body")
+				RespondError(w, http.StatusInternalServerError, "internal_error", "failed to read request body", log)
+			}
 			return
 		}
 
@@ -48,7 +58,7 @@ func NylasWebhook(secret string, nc NylasEventService, q *sqlcdb.Queries, log ze
 		sig := r.Header.Get("X-Nylas-Signature")
 		if !verifyHMAC(secret, body, sig) {
 			log.Warn().Msg("invalid webhook signature")
-			RespondError(w, http.StatusUnauthorized, "unauthorized", "invalid webhook signature")
+			RespondError(w, http.StatusUnauthorized, "unauthorized", "invalid webhook signature", log)
 			return
 		}
 

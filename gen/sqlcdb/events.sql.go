@@ -53,21 +53,21 @@ func (q *Queries) GetEventByNylasID(ctx context.Context, nylasEventID string) (E
 
 const listEventsByCalendarAndRange = `-- name: ListEventsByCalendarAndRange :many
 SELECT id, calendar_id, nylas_event_id, title, description, location, start_time, end_time, original_tz, all_day, status, busy, category, recurrence_rule, raw_data, created_at, updated_at FROM events
-WHERE calendar_id = ?
-  AND start_time >= ?
-  AND end_time <= ?
+WHERE calendar_id = ?1
+  AND start_time < ?2
+  AND end_time > ?3
   AND status != 'cancelled'
 ORDER BY start_time
 `
 
 type ListEventsByCalendarAndRangeParams struct {
 	CalendarID int64     `json:"calendar_id"`
-	StartTime  time.Time `json:"start_time"`
-	EndTime    time.Time `json:"end_time"`
+	RangeEnd   time.Time `json:"range_end"`
+	RangeStart time.Time `json:"range_start"`
 }
 
 func (q *Queries) ListEventsByCalendarAndRange(ctx context.Context, arg ListEventsByCalendarAndRangeParams) ([]Event, error) {
-	rows, err := q.db.QueryContext(ctx, listEventsByCalendarAndRange, arg.CalendarID, arg.StartTime, arg.EndTime)
+	rows, err := q.db.QueryContext(ctx, listEventsByCalendarAndRange, arg.CalendarID, arg.RangeEnd, arg.RangeStart)
 	if err != nil {
 		return nil, err
 	}

@@ -127,6 +127,47 @@ func (q *Queries) ListActiveCalendarIDs(ctx context.Context) ([]ListActiveCalend
 	return items, nil
 }
 
+const listActiveCalendarIDsByGrantID = `-- name: ListActiveCalendarIDsByGrantID :many
+SELECT
+    c.nylas_calendar_id,
+    c.id AS calendar_id,
+    ca.nylas_grant_id
+FROM calendars c
+JOIN calendar_accounts ca ON ca.id = c.account_id
+WHERE c.is_active = 1
+  AND ca.is_active = 1
+  AND ca.nylas_grant_id = ?
+`
+
+type ListActiveCalendarIDsByGrantIDRow struct {
+	NylasCalendarID string `json:"nylas_calendar_id"`
+	CalendarID      int64  `json:"calendar_id"`
+	NylasGrantID    string `json:"nylas_grant_id"`
+}
+
+func (q *Queries) ListActiveCalendarIDsByGrantID(ctx context.Context, nylasGrantID string) ([]ListActiveCalendarIDsByGrantIDRow, error) {
+	rows, err := q.db.QueryContext(ctx, listActiveCalendarIDsByGrantID, nylasGrantID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListActiveCalendarIDsByGrantIDRow{}
+	for rows.Next() {
+		var i ListActiveCalendarIDsByGrantIDRow
+		if err := rows.Scan(&i.NylasCalendarID, &i.CalendarID, &i.NylasGrantID); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listCalendars = `-- name: ListCalendars :many
 SELECT
     c.id, c.account_id, c.nylas_calendar_id, c.name, c.color, c.is_blocking, c.is_active, c.created_at, c.updated_at,

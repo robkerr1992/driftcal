@@ -48,6 +48,7 @@ func NormalizeEvent(calendarID int64, ev *nylas.Event) (sqlcdb.UpsertEventParams
 		AllDay:       allDay,
 		Status:       status,
 		Busy:         busy,
+		// TODO(categorize): derive category from event attributes; hardcoded until AI categorization milestone
 		Category:     sql.NullString{String: "other", Valid: true},
 		RecurrenceRule: recurrence,
 		RawData:      sql.NullString{String: string(rawData), Valid: true},

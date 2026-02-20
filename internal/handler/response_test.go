@@ -5,13 +5,16 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+
+	"github.com/rs/zerolog"
 )
 
 func TestRespondJSON(t *testing.T) {
 	rec := httptest.NewRecorder()
 	data := map[string]string{"hello": "world"}
+	log := zerolog.Nop()
 
-	RespondJSON(rec, http.StatusOK, data)
+	RespondJSON(rec, http.StatusOK, data, log)
 
 	if rec.Code != http.StatusOK {
 		t.Errorf("status = %d, want %d", rec.Code, http.StatusOK)
@@ -31,8 +34,9 @@ func TestRespondJSON(t *testing.T) {
 
 func TestRespondError(t *testing.T) {
 	rec := httptest.NewRecorder()
+	log := zerolog.Nop()
 
-	RespondError(rec, http.StatusNotFound, "not_found", "resource not found")
+	RespondError(rec, http.StatusNotFound, "not_found", "resource not found", log)
 
 	if rec.Code != http.StatusNotFound {
 		t.Errorf("status = %d, want %d", rec.Code, http.StatusNotFound)

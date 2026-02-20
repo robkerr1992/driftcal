@@ -157,7 +157,7 @@ func TestWebhook_EventUpdated(t *testing.T) {
 	log := zerolog.Nop()
 
 	// Insert initial event
-	q.UpsertEvent(context.Background(), sqlcdb.UpsertEventParams{
+	if _, err := q.UpsertEvent(context.Background(), sqlcdb.UpsertEventParams{
 		CalendarID:   cal.ID,
 		NylasEventID: "evt-wh-upd",
 		Title:        sql.NullString{String: "Original Title", Valid: true},
@@ -166,7 +166,9 @@ func TestWebhook_EventUpdated(t *testing.T) {
 		Category:     sql.NullString{String: "other", Valid: true},
 		StartTime:    mustParseTime("2024-01-01T00:00:00Z"),
 		EndTime:      mustParseTime("2024-01-01T01:00:00Z"),
-	})
+	}); err != nil {
+		t.Fatalf("inserting initial event: %v", err)
+	}
 
 	h := NylasWebhook(webhookSecret, mock, q, log)
 
@@ -216,7 +218,7 @@ func TestWebhook_EventDeleted(t *testing.T) {
 	log := zerolog.Nop()
 
 	// Insert an event to delete
-	q.UpsertEvent(context.Background(), sqlcdb.UpsertEventParams{
+	if _, err := q.UpsertEvent(context.Background(), sqlcdb.UpsertEventParams{
 		CalendarID:   cal.ID,
 		NylasEventID: "evt-wh-del",
 		Title:        sql.NullString{String: "To Delete", Valid: true},
@@ -225,7 +227,9 @@ func TestWebhook_EventDeleted(t *testing.T) {
 		Category:     sql.NullString{String: "other", Valid: true},
 		StartTime:    mustParseTime("2024-01-01T00:00:00Z"),
 		EndTime:      mustParseTime("2024-01-01T01:00:00Z"),
-	})
+	}); err != nil {
+		t.Fatalf("inserting event to delete: %v", err)
+	}
 
 	h := NylasWebhook(webhookSecret, mock, q, log)
 
@@ -290,6 +294,89 @@ func TestWebhook_MalformedJSON(t *testing.T) {
 	// Should return 200 to avoid Nylas retries
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, want %d (malformed JSON should still return 200)", rec.Code, http.StatusOK)
+	}
+}
+
+func TestWebhook_UnknownEventType(t *testing.T) {
+	q, _ := setupWebhookTestDB(t)
+	mock := &mockNylasEventService{}
+	log := zerolog.Nop()
+
+	h := NylasWebhook(webhookSecret, mock, q, log)
+
+	payload := map[string]any{
+		"type": "grant.created",
+		"data": map[string]any{
+			"object": json.RawMessage(`{"id":"grant-123"}`),
+		},
+	}
+	body, _ := json.Marshal(payload)
+
+	req := httptest.NewRequest(http.MethodPost, "/api/webhooks/nylas", strings.NewReader(string(body)))
+	req.Header.Set("X-Nylas-Signature", signPayload(body))
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d (unknown type should still return 200)", rec.Code, http.StatusOK)
+	}
+}
+
+func TestWebhook_EventForUnknownCalendar(t *testing.T) {
+	q, _ := setupWebhookTestDB(t)
+	mock := &mockNylasEventService{}
+	log := zerolog.Nop()
+
+	h := NylasWebhook(webhookSecret, mock, q, log)
+
+	eventObj := nylas.Event{
+		ID:         "evt-unknown-cal",
+		CalendarID: "nonexistent-calendar-id",
+		Title:      "Orphan Event",
+		Status:     "confirmed",
+		Busy:       true,
+		When: nylas.EventWhen{
+			Object:    "timespan",
+			StartTime: 1704067200,
+			EndTime:   1704070800,
+		},
+	}
+	eventJSON, _ := json.Marshal(eventObj)
+
+	payload := map[string]any{
+		"type": "event.created",
+		"data": map[string]any{
+			"object": json.RawMessage(eventJSON),
+		},
+	}
+	body, _ := json.Marshal(payload)
+
+	req := httptest.NewRequest(http.MethodPost, "/api/webhooks/nylas", strings.NewReader(string(body)))
+	req.Header.Set("X-Nylas-Signature", signPayload(body))
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+
+	// Should return 200 (graceful degradation, no crash)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d (unknown calendar should still return 200)", rec.Code, http.StatusOK)
+	}
+}
+
+func TestWebhook_MissingSigHeader(t *testing.T) {
+	q, _ := setupWebhookTestDB(t)
+	mock := &mockNylasEventService{}
+	log := zerolog.Nop()
+
+	h := NylasWebhook(webhookSecret, mock, q, log)
+
+	body := `{"type":"event.created","data":{"object":{}}}`
+	req := httptest.NewRequest(http.MethodPost, "/api/webhooks/nylas", strings.NewReader(body))
+	// Intentionally omit X-Nylas-Signature header
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusUnauthorized)
 	}
 }
 

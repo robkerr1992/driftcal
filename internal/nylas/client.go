@@ -89,8 +89,14 @@ func (c *Client) ListEvents(ctx context.Context, grantID, calendarID string, sta
 		"limit":       {"200"},
 	}
 
+	const maxPages = 50
+
 	var all []Event
-	for {
+	for page := 0; ; page++ {
+		if page >= maxPages {
+			return all, fmt.Errorf("pagination limit reached (%d pages)", maxPages)
+		}
+
 		var resp listResponse[Event]
 		if err := c.get(ctx, path, params, &resp); err != nil {
 			return nil, fmt.Errorf("listing events: %w", err)
@@ -161,7 +167,8 @@ func (c *Client) do(req *http.Request, dest any) error {
 	}
 	defer resp.Body.Close()
 
-	respBody, err := io.ReadAll(resp.Body)
+	const maxResponseBytes = 10 << 20 // 10 MB
+	respBody, err := io.ReadAll(io.LimitReader(resp.Body, maxResponseBytes))
 	if err != nil {
 		return fmt.Errorf("reading response body: %w", err)
 	}

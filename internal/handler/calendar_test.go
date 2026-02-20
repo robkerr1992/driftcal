@@ -63,7 +63,9 @@ func TestListCalendars(t *testing.T) {
 	}
 
 	var calendars []json.RawMessage
-	json.NewDecoder(rec.Body).Decode(&calendars)
+	if err := json.NewDecoder(rec.Body).Decode(&calendars); err != nil {
+		t.Fatalf("decoding response: %v", err)
+	}
 	if len(calendars) != 1 {
 		t.Errorf("got %d calendars, want 1", len(calendars))
 	}
@@ -92,7 +94,9 @@ func TestUpdateCalendar_Success(t *testing.T) {
 	}
 
 	var updated sqlcdb.Calendar
-	json.NewDecoder(rec.Body).Decode(&updated)
+	if err := json.NewDecoder(rec.Body).Decode(&updated); err != nil {
+		t.Fatalf("decoding response: %v", err)
+	}
 	if updated.IsBlocking {
 		t.Error("IsBlocking should be false after update")
 	}

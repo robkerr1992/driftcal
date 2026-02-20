@@ -57,7 +57,9 @@ func TestConnectAccount_Success(t *testing.T) {
 	}
 
 	var resp map[string]string
-	json.NewDecoder(rec.Body).Decode(&resp)
+	if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
+		t.Fatalf("decoding response: %v", err)
+	}
 	if resp["auth_url"] != "https://nylas.com/auth?foo=bar" {
 		t.Errorf("auth_url = %q, want %q", resp["auth_url"], "https://nylas.com/auth?foo=bar")
 	}
@@ -73,6 +75,24 @@ func TestConnectAccount_InvalidProvider(t *testing.T) {
 
 	req := httptest.NewRequest(http.MethodPost, "/api/accounts/connect",
 		strings.NewReader(`{"provider":"yahoo"}`))
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusBadRequest)
+	}
+}
+
+func TestConnectAccount_InvalidBody(t *testing.T) {
+	mock := &mockNylasAccountService{}
+	db := database.TestDB(t)
+	q := sqlcdb.New(db)
+	log := zerolog.Nop()
+
+	h := ConnectAccount(mock, "https://example.com", q, log)
+
+	req := httptest.NewRequest(http.MethodPost, "/api/accounts/connect",
+		strings.NewReader("not json"))
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
 
@@ -107,7 +127,9 @@ func TestAccountCallback_Success(t *testing.T) {
 	}
 
 	var resp map[string]json.RawMessage
-	json.NewDecoder(rec.Body).Decode(&resp)
+	if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
+		t.Fatalf("decoding response: %v", err)
+	}
 	if resp["account"] == nil {
 		t.Error("missing account in response")
 	}
@@ -149,6 +171,46 @@ func TestAccountCallback_ExchangeError(t *testing.T) {
 
 	if rec.Code != http.StatusBadGateway {
 		t.Fatalf("status = %d, want %d", rec.Code, http.StatusBadGateway)
+	}
+}
+
+func TestAccountCallback_CalendarFetchFails(t *testing.T) {
+	mock := &mockNylasAccountService{
+		tokenResp: &nylas.TokenResponse{
+			GrantID:  "grant-cal-fail",
+			Email:    "calfail@example.com",
+			Provider: "google",
+		},
+		calendarsErr: errors.New("calendar fetch failed"),
+	}
+	db := database.TestDB(t)
+	q := sqlcdb.New(db)
+	log := zerolog.Nop()
+
+	h := AccountCallback(mock, "https://example.com", q, log)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/accounts/callback?code=code1", nil)
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusCreated)
+	}
+
+	var resp map[string]json.RawMessage
+	if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
+		t.Fatalf("decoding response: %v", err)
+	}
+	if resp["account"] == nil {
+		t.Error("missing account in response")
+	}
+
+	var calendars []json.RawMessage
+	if err := json.Unmarshal(resp["calendars"], &calendars); err != nil {
+		t.Fatalf("decoding calendars: %v", err)
+	}
+	if len(calendars) != 0 {
+		t.Errorf("expected empty calendars array, got %d", len(calendars))
 	}
 }
 
@@ -200,9 +262,46 @@ func TestListAccounts_Empty(t *testing.T) {
 	}
 
 	var accounts []json.RawMessage
-	json.NewDecoder(rec.Body).Decode(&accounts)
+	if err := json.NewDecoder(rec.Body).Decode(&accounts); err != nil {
+		t.Fatalf("decoding response: %v", err)
+	}
 	if len(accounts) != 0 {
 		t.Errorf("got %d accounts, want 0", len(accounts))
+	}
+}
+
+func TestListAccounts_WithData(t *testing.T) {
+	db := database.TestDB(t)
+	q := sqlcdb.New(db)
+	log := zerolog.Nop()
+
+	// Create some accounts
+	for _, email := range []string{"a@test.com", "b@test.com"} {
+		if _, err := q.CreateAccount(context.Background(), sqlcdb.CreateAccountParams{
+			NylasGrantID: "grant-" + email,
+			Provider:     "google",
+			Email:        email,
+		}); err != nil {
+			t.Fatalf("creating account %s: %v", email, err)
+		}
+	}
+
+	h := ListAccounts(q, log)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/accounts", nil)
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusOK)
+	}
+
+	var accounts []json.RawMessage
+	if err := json.NewDecoder(rec.Body).Decode(&accounts); err != nil {
+		t.Fatalf("decoding response: %v", err)
+	}
+	if len(accounts) != 2 {
+		t.Errorf("got %d accounts, want 2", len(accounts))
 	}
 }
 

@@ -191,3 +191,103 @@ func TestNormalizeEvent_RawDataPresent(t *testing.T) {
 		t.Error("RawData should not be empty")
 	}
 }
+
+func TestNormalizeEvent_InvalidDate(t *testing.T) {
+	ev := &nylas.Event{
+		ID:     "evt-bad-date",
+		Title:  "Bad Date",
+		Status: "confirmed",
+		When: nylas.EventWhen{
+			Object: "date",
+			Date:   "not-a-date",
+		},
+	}
+
+	_, err := NormalizeEvent(1, ev)
+	if err == nil {
+		t.Fatal("expected error for invalid date")
+	}
+}
+
+func TestNormalizeEvent_RecurrenceRule(t *testing.T) {
+	ev := &nylas.Event{
+		ID:             "evt-recur",
+		Title:          "Weekly Standup",
+		Status:         "confirmed",
+		RecurrenceRule: []string{"RRULE:FREQ=WEEKLY"},
+		When: nylas.EventWhen{
+			Object:    "timespan",
+			StartTime: 1704067200,
+			EndTime:   1704070800,
+		},
+	}
+
+	params, err := NormalizeEvent(1, ev)
+	if err != nil {
+		t.Fatalf("NormalizeEvent failed: %v", err)
+	}
+
+	if !params.RecurrenceRule.Valid {
+		t.Fatal("RecurrenceRule should be valid")
+	}
+	if params.RecurrenceRule.String != "RRULE:FREQ=WEEKLY" {
+		t.Errorf("RecurrenceRule = %q, want %q", params.RecurrenceRule.String, "RRULE:FREQ=WEEKLY")
+	}
+}
+
+func TestNormalizeEvent_OptionalFields(t *testing.T) {
+	// Empty optional fields
+	ev := &nylas.Event{
+		ID:     "evt-empty-fields",
+		Status: "confirmed",
+		When: nylas.EventWhen{
+			Object:    "timespan",
+			StartTime: 1704067200,
+			EndTime:   1704070800,
+		},
+	}
+
+	params, err := NormalizeEvent(1, ev)
+	if err != nil {
+		t.Fatalf("NormalizeEvent failed: %v", err)
+	}
+
+	if params.Title.Valid {
+		t.Errorf("empty title should produce Valid=false, got %v", params.Title)
+	}
+	if params.Description.Valid {
+		t.Errorf("empty description should produce Valid=false, got %v", params.Description)
+	}
+	if params.Location.Valid {
+		t.Errorf("empty location should produce Valid=false, got %v", params.Location)
+	}
+
+	// Non-empty optional fields
+	ev2 := &nylas.Event{
+		ID:          "evt-full-fields",
+		Title:       "Meeting",
+		Description: "A description",
+		Location:    "Room 42",
+		Status:      "confirmed",
+		When: nylas.EventWhen{
+			Object:    "timespan",
+			StartTime: 1704067200,
+			EndTime:   1704070800,
+		},
+	}
+
+	params2, err := NormalizeEvent(1, ev2)
+	if err != nil {
+		t.Fatalf("NormalizeEvent failed: %v", err)
+	}
+
+	if !params2.Title.Valid || params2.Title.String != "Meeting" {
+		t.Errorf("Title = %v, want {Meeting true}", params2.Title)
+	}
+	if !params2.Description.Valid || params2.Description.String != "A description" {
+		t.Errorf("Description = %v, want {A description true}", params2.Description)
+	}
+	if !params2.Location.Valid || params2.Location.String != "Room 42" {
+		t.Errorf("Location = %v, want {Room 42 true}", params2.Location)
+	}
+}

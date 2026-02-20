@@ -34,7 +34,7 @@ func (s *Server) routes() http.Handler {
 
 	// Authenticated API routes (Bearer token)
 	r.Route("/api", func(r chi.Router) {
-		r.Use(authmw.BearerAuth(s.cfg.APIKey))
+		r.Use(authmw.BearerAuth(s.cfg.APIKey, s.log))
 
 		r.Post("/accounts/connect", handler.ConnectAccount(s.nylas, s.cfg.BaseURL, s.queries, s.log))
 		r.Get("/accounts", handler.ListAccounts(s.queries, s.log))

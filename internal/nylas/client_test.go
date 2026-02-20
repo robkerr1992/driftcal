@@ -183,3 +183,78 @@ func TestGetEvent(t *testing.T) {
 		t.Errorf("Title = %q, want %q", evt.Title, "Team Standup")
 	}
 }
+
+func TestListCalendars_Error(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+		w.Write([]byte(`{"error":"server_error"}`))
+	}))
+	defer srv.Close()
+
+	c := NewWithBaseURL("client-123", "api-key", srv.URL)
+	_, err := c.ListCalendars(context.Background(), "grant-abc")
+	if err == nil {
+		t.Fatal("expected error for 500 response")
+	}
+	if !strings.Contains(err.Error(), "500") {
+		t.Errorf("error should mention status code, got: %v", err)
+	}
+}
+
+func TestListEvents_Error(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+		w.Write([]byte(`{"error":"server_error"}`))
+	}))
+	defer srv.Close()
+
+	c := NewWithBaseURL("client-123", "api-key", srv.URL)
+	_, err := c.ListEvents(context.Background(), "grant-abc", "cal-1", time.Now(), time.Now())
+	if err == nil {
+		t.Fatal("expected error for 500 response")
+	}
+	if !strings.Contains(err.Error(), "500") {
+		t.Errorf("error should mention status code, got: %v", err)
+	}
+}
+
+func TestGetEvent_Error(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNotFound)
+		w.Write([]byte(`{"error":"not_found"}`))
+	}))
+	defer srv.Close()
+
+	c := NewWithBaseURL("client-123", "api-key", srv.URL)
+	_, err := c.GetEvent(context.Background(), "grant-abc", "evt-missing", "cal-1")
+	if err == nil {
+		t.Fatal("expected error for 404 response")
+	}
+	if !strings.Contains(err.Error(), "404") {
+		t.Errorf("error should mention status code, got: %v", err)
+	}
+}
+
+func TestListEvents_PaginationLimit(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Always return a next cursor to trigger pagination limit
+		json.NewEncoder(w).Encode(listResponse[Event]{
+			Data:       []Event{{ID: "evt-page", Title: "Page Event"}},
+			NextCursor: "always-more",
+		})
+	}))
+	defer srv.Close()
+
+	c := NewWithBaseURL("client-123", "api-key", srv.URL)
+	events, err := c.ListEvents(context.Background(), "grant-abc", "cal-1", time.Now(), time.Now())
+	if err == nil {
+		t.Fatal("expected error when pagination limit reached")
+	}
+	if !strings.Contains(err.Error(), "pagination limit") {
+		t.Errorf("error should mention pagination limit, got: %v", err)
+	}
+	// Should still return the events collected so far
+	if len(events) != 50 {
+		t.Errorf("got %d events, want 50 (one per page before limit)", len(events))
+	}
+}

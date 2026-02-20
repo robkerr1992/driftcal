@@ -5,10 +5,13 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+
+	"github.com/rs/zerolog"
 )
 
 func TestBearerAuth_ValidToken(t *testing.T) {
-	handler := BearerAuth("test-key")(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	log := zerolog.Nop()
+	handler := BearerAuth("test-key", log)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 	}))
 
@@ -24,7 +27,8 @@ func TestBearerAuth_ValidToken(t *testing.T) {
 }
 
 func TestBearerAuth_MissingHeader(t *testing.T) {
-	handler := BearerAuth("test-key")(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	log := zerolog.Nop()
+	handler := BearerAuth("test-key", log)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		t.Fatal("handler should not be called")
 	}))
 
@@ -41,7 +45,8 @@ func TestBearerAuth_MissingHeader(t *testing.T) {
 }
 
 func TestBearerAuth_WrongToken(t *testing.T) {
-	handler := BearerAuth("test-key")(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	log := zerolog.Nop()
+	handler := BearerAuth("test-key", log)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		t.Fatal("handler should not be called")
 	}))
 
@@ -59,7 +64,8 @@ func TestBearerAuth_WrongToken(t *testing.T) {
 }
 
 func TestBearerAuth_MalformedHeader(t *testing.T) {
-	handler := BearerAuth("test-key")(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	log := zerolog.Nop()
+	handler := BearerAuth("test-key", log)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		t.Fatal("handler should not be called")
 	}))
 

@@ -30,7 +30,7 @@ func ConnectAccount(nc NylasAccountService, baseURL string, q *sqlcdb.Queries, l
 			Provider string `json:"provider"`
 		}
 		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
-			RespondError(w, http.StatusBadRequest, "bad_request", "invalid JSON body")
+			RespondError(w, http.StatusBadRequest, "bad_request", "invalid JSON body", log)
 			return
 		}
 
@@ -39,14 +39,14 @@ func ConnectAccount(nc NylasAccountService, baseURL string, q *sqlcdb.Queries, l
 		case "google", "microsoft", "icloud":
 			// valid
 		default:
-			RespondError(w, http.StatusBadRequest, "bad_request", "provider must be google, microsoft, or icloud")
+			RespondError(w, http.StatusBadRequest, "bad_request", "provider must be google, microsoft, or icloud", log)
 			return
 		}
 
 		redirectURI := baseURL + "/api/accounts/callback"
 		authURL := nc.AuthURL(redirectURI, provider)
 
-		RespondJSON(w, http.StatusOK, map[string]string{"auth_url": authURL})
+		RespondJSON(w, http.StatusOK, map[string]string{"auth_url": authURL}, log)
 	}
 }
 
@@ -56,7 +56,7 @@ func AccountCallback(nc NylasAccountService, baseURL string, q *sqlcdb.Queries, 
 	return func(w http.ResponseWriter, r *http.Request) {
 		code := r.URL.Query().Get("code")
 		if code == "" {
-			RespondError(w, http.StatusBadRequest, "bad_request", "missing code parameter")
+			RespondError(w, http.StatusBadRequest, "bad_request", "missing code parameter", log)
 			return
 		}
 
@@ -66,7 +66,7 @@ func AccountCallback(nc NylasAccountService, baseURL string, q *sqlcdb.Queries, 
 		token, err := nc.ExchangeCode(ctx, code, redirectURI)
 		if err != nil {
 			log.Error().Err(err).Msg("failed to exchange auth code")
-			RespondError(w, http.StatusBadGateway, "exchange_failed", "failed to exchange authorization code")
+			RespondError(w, http.StatusBadGateway, "exchange_failed", "failed to exchange authorization code", log)
 			return
 		}
 
@@ -78,11 +78,11 @@ func AccountCallback(nc NylasAccountService, baseURL string, q *sqlcdb.Queries, 
 		})
 		if err != nil {
 			if isUniqueViolation(err) {
-				RespondError(w, http.StatusConflict, "duplicate_account", "this calendar account is already connected")
+				RespondError(w, http.StatusConflict, "duplicate_account", "this calendar account is already connected", log)
 				return
 			}
 			log.Error().Err(err).Msg("failed to create account")
-			RespondError(w, http.StatusInternalServerError, "internal_error", "failed to save account")
+			RespondError(w, http.StatusInternalServerError, "internal_error", "failed to save account", log)
 			return
 		}
 
@@ -93,20 +93,20 @@ func AccountCallback(nc NylasAccountService, baseURL string, q *sqlcdb.Queries, 
 			RespondJSON(w, http.StatusCreated, map[string]any{
 				"account":   account,
 				"calendars": []any{},
-			})
+			}, log)
 			return
 		}
 
 		var calendars []sqlcdb.Calendar
-		for _, nc := range nylasCals {
+		for _, nylCal := range nylasCals {
 			cal, err := q.CreateCalendar(ctx, sqlcdb.CreateCalendarParams{
 				AccountID:       account.ID,
-				NylasCalendarID: nc.ID,
-				Name:            nc.Name,
-				Color:           sql.NullString{String: nc.HexColor, Valid: nc.HexColor != ""},
+				NylasCalendarID: nylCal.ID,
+				Name:            nylCal.Name,
+				Color:           sql.NullString{String: nylCal.HexColor, Valid: nylCal.HexColor != ""},
 			})
 			if err != nil {
-				log.Warn().Err(err).Str("calendar_id", nc.ID).Msg("failed to create calendar")
+				log.Warn().Err(err).Str("calendar_id", nylCal.ID).Msg("failed to create calendar")
 				continue
 			}
 			calendars = append(calendars, cal)
@@ -115,7 +115,7 @@ func AccountCallback(nc NylasAccountService, baseURL string, q *sqlcdb.Queries, 
 		RespondJSON(w, http.StatusCreated, map[string]any{
 			"account":   account,
 			"calendars": calendars,
-		})
+		}, log)
 	}
 }
 
@@ -125,10 +125,10 @@ func ListAccounts(q *sqlcdb.Queries, log zerolog.Logger) http.HandlerFunc {
 		accounts, err := q.ListActiveAccounts(r.Context())
 		if err != nil {
 			log.Error().Err(err).Msg("failed to list accounts")
-			RespondError(w, http.StatusInternalServerError, "internal_error", "failed to list accounts")
+			RespondError(w, http.StatusInternalServerError, "internal_error", "failed to list accounts", log)
 			return
 		}
-		RespondJSON(w, http.StatusOK, accounts)
+		RespondJSON(w, http.StatusOK, accounts, log)
 	}
 }
 
@@ -138,24 +138,24 @@ func DisconnectAccount(q *sqlcdb.Queries, log zerolog.Logger) http.HandlerFunc {
 		idStr := chi.URLParam(r, "id")
 		id, err := strconv.ParseInt(idStr, 10, 64)
 		if err != nil {
-			RespondError(w, http.StatusBadRequest, "bad_request", "invalid account ID")
+			RespondError(w, http.StatusBadRequest, "bad_request", "invalid account ID", log)
 			return
 		}
 
 		// Verify the account exists
 		if _, err := q.GetAccountByID(r.Context(), id); err != nil {
 			if errors.Is(err, sql.ErrNoRows) {
-				RespondError(w, http.StatusNotFound, "not_found", "account not found")
+				RespondError(w, http.StatusNotFound, "not_found", "account not found", log)
 				return
 			}
 			log.Error().Err(err).Int64("id", id).Msg("failed to get account")
-			RespondError(w, http.StatusInternalServerError, "internal_error", "failed to get account")
+			RespondError(w, http.StatusInternalServerError, "internal_error", "failed to get account", log)
 			return
 		}
 
 		if err := q.DeactivateAccount(r.Context(), id); err != nil {
 			log.Error().Err(err).Int64("id", id).Msg("failed to deactivate account")
-			RespondError(w, http.StatusInternalServerError, "internal_error", "failed to deactivate account")
+			RespondError(w, http.StatusInternalServerError, "internal_error", "failed to deactivate account", log)
 			return
 		}
 

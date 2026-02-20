@@ -30,9 +30,9 @@ WHERE nylas_event_id = ?;
 
 -- name: ListEventsByCalendarAndRange :many
 SELECT * FROM events
-WHERE calendar_id = ?
-  AND start_time >= ?
-  AND end_time <= ?
+WHERE calendar_id = sqlc.arg(calendar_id)
+  AND start_time < sqlc.arg(range_end)
+  AND end_time > sqlc.arg(range_start)
   AND status != 'cancelled'
 ORDER BY start_time;
 

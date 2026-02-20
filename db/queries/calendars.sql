@@ -34,3 +34,14 @@ SELECT
 FROM calendars c
 JOIN calendar_accounts ca ON ca.id = c.account_id
 WHERE c.is_active = 1 AND ca.is_active = 1;
+
+-- name: ListActiveCalendarIDsByGrantID :many
+SELECT
+    c.nylas_calendar_id,
+    c.id AS calendar_id,
+    ca.nylas_grant_id
+FROM calendars c
+JOIN calendar_accounts ca ON ca.id = c.account_id
+WHERE c.is_active = 1
+  AND ca.is_active = 1
+  AND ca.nylas_grant_id = ?;
