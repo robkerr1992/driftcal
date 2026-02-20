@@ -1,0 +1,27 @@
+# Binary (only at repo root)
+/driftcal
+
+# Database
+*.db
+*.db-wal
+*.db-shm
+
+# Environment
+.env
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# Go
+/vendor/
+
+# sqlc generated (tracked separately if needed)
+# gen/sqlcdb/*.go

@@ -1,0 +1,61 @@
+version: "3"
+
+vars:
+  BINARY: driftcal
+
+tasks:
+  build:
+    desc: Build the binary
+    cmds:
+      - go build -o {{.BINARY}} ./cmd/driftcal
+
+  run:
+    desc: Build and run the server
+    deps: [build]
+    cmds:
+      - ./{{.BINARY}}
+
+  test:
+    desc: Run all tests
+    cmds:
+      - go test ./... -race -count=1
+
+  lint:
+    desc: Run golangci-lint
+    cmds:
+      - golangci-lint run ./...
+
+  fmt:
+    desc: Format all Go files
+    cmds:
+      - gofmt -w .
+
+  sqlc:
+    desc: Generate sqlc code
+    cmds:
+      - sqlc generate
+
+  migrate-status:
+    desc: Show migration status
+    cmds:
+      - go run ./cmd/driftcal migrate-status
+    # Note: will need a small CLI subcommand in a later milestone
+
+  migrate-down:
+    desc: Roll back the last migration
+    cmds:
+      - go run ./cmd/driftcal migrate-down
+    # Note: will need a small CLI subcommand in a later milestone
+
+  clean:
+    desc: Remove build artifacts and database
+    cmds:
+      - rm -f {{.BINARY}}
+      - rm -f driftcal.db driftcal.db-wal driftcal.db-shm
+
+  check:
+    desc: Run fmt, lint, and test
+    cmds:
+      - task: fmt
+      - task: lint
+      - task: test
