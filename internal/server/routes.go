@@ -51,6 +51,14 @@ func (s *Server) routes() http.Handler {
 
 		r.Get("/preferences", handler.GetPreferences(s.prefs, s.log))
 		r.Patch("/preferences", handler.UpdatePreferences(s.prefs, s.log))
+
+		r.Get("/goals", handler.ListGoals(s.queries, s.log))
+		r.Post("/goals", handler.CreateGoal(s.queries, s.log))
+		r.Patch("/goals/{id}", handler.UpdateGoal(s.queries, s.log))
+		r.Delete("/goals/{id}", handler.DeleteGoal(s.queries, s.log))
+		r.Get("/goals/{id}/instances", handler.ListGoalInstances(s.queries, s.log))
+		r.Post("/goals/{id}/instances/{instance_id}/skip", handler.SkipGoalInstance(s.queries, s.log))
+		r.Post("/goals/{id}/instances/{instance_id}/complete", handler.CompleteGoalInstance(s.queries, s.log))
 	})
 
 	return r

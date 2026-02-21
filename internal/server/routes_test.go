@@ -77,6 +77,13 @@ func TestRoutes_NewEndpoints(t *testing.T) {
 		{"DELETE /api/protected-blocks/1", http.MethodDelete, "/api/protected-blocks/1"},
 		{"GET /api/preferences", http.MethodGet, "/api/preferences"},
 		{"PATCH /api/preferences", http.MethodPatch, "/api/preferences"},
+		{"GET /api/goals", http.MethodGet, "/api/goals"},
+		{"POST /api/goals", http.MethodPost, "/api/goals"},
+		{"PATCH /api/goals/1", http.MethodPatch, "/api/goals/1"},
+		{"DELETE /api/goals/1", http.MethodDelete, "/api/goals/1"},
+		{"GET /api/goals/1/instances", http.MethodGet, "/api/goals/1/instances"},
+		{"POST /api/goals/1/instances/1/skip", http.MethodPost, "/api/goals/1/instances/1/skip"},
+		{"POST /api/goals/1/instances/1/complete", http.MethodPost, "/api/goals/1/instances/1/complete"},
 	}
 
 	for _, tt := range unauthTests {
@@ -98,6 +105,7 @@ func TestRoutes_NewEndpoints(t *testing.T) {
 	}{
 		{"GET /api/protected-blocks", "/api/protected-blocks"},
 		{"GET /api/preferences", "/api/preferences"},
+		{"GET /api/goals", "/api/goals"},
 	}
 
 	for _, tt := range authGetTests {
