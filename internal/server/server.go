@@ -15,6 +15,7 @@ import (
 	"github.com/robkerr1992/driftcal/gen/sqlcdb"
 	"github.com/robkerr1992/driftcal/internal/config"
 	"github.com/robkerr1992/driftcal/internal/nylas"
+	"github.com/robkerr1992/driftcal/internal/preferences"
 	syncpkg "github.com/robkerr1992/driftcal/internal/sync"
 )
 
@@ -23,6 +24,7 @@ type Server struct {
 	cfg       *config.Config
 	db        *sql.DB
 	queries   *sqlcdb.Queries
+	prefs     *preferences.Store
 	log       zerolog.Logger
 	startTime time.Time
 	nylas     *nylas.Client
@@ -37,6 +39,7 @@ func New(cfg *config.Config, db *sql.DB, log zerolog.Logger) *Server {
 		cfg:       cfg,
 		db:        db,
 		queries:   q,
+		prefs:     preferences.New(q, db),
 		log:       log,
 		startTime: time.Now(),
 	}
