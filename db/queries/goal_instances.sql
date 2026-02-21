@@ -39,3 +39,10 @@ ORDER BY scheduled_start;
 SELECT COUNT(*) AS count FROM goal_instances
 WHERE goal_id = ? AND week_start = ?
   AND status IN ('scheduled', 'completed');
+
+-- name: ListGoalInstanceCountsForWeek :many
+SELECT goal_id, status, COUNT(*) AS count
+FROM goal_instances
+WHERE week_start = ?
+  AND status IN ('scheduled', 'completed')
+GROUP BY goal_id, status;

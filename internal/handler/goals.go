@@ -40,7 +40,7 @@ type goalResponse struct {
 	Category           string         `json:"category"`
 	DurationMinutes    int64          `json:"duration_minutes"`
 	TimesPerWeek       int64          `json:"times_per_week"`
-	PreferredTimeOfDay sql.NullString `json:"preferred_time_of_day"`
+	PreferredTimeOfDay string         `json:"preferred_time_of_day"`
 	EnergyLevel        string         `json:"energy_level"`
 	EarliestHour       string         `json:"earliest_hour"`
 	LatestHour         string         `json:"latest_hour"`
@@ -66,28 +66,17 @@ func goalToResponse(g sqlcdb.RecurringGoal) goalResponse {
 		Category:           g.Category,
 		DurationMinutes:    g.DurationMinutes,
 		TimesPerWeek:       g.TimesPerWeek,
-		PreferredTimeOfDay: g.PreferredTimeOfDay,
+		PreferredTimeOfDay: g.PreferredTimeOfDay.String,
 		EnergyLevel:        g.EnergyLevel,
 		EarliestHour:       g.EarliestHour,
 		LatestHour:         g.LatestHour,
-		AllowedDays:        parseAllowedDays(g.AllowedDays),
+		AllowedDays:        goal.ParseAllowedDays(g.AllowedDays),
 		MinGapBetweenHours: g.MinGapBetweenHours,
 		IsActive:           g.IsActive,
 		Priority:           g.Priority,
 		CreatedAt:          g.CreatedAt,
 		UpdatedAt:          g.UpdatedAt,
 	}
-}
-
-func parseAllowedDays(s sql.NullString) []string {
-	if !s.Valid || s.String == "" {
-		return nil
-	}
-	var days []string
-	if err := json.Unmarshal([]byte(s.String), &days); err != nil {
-		return nil
-	}
-	return days
 }
 
 func marshalAllowedDays(days []string) sql.NullString {
@@ -102,6 +91,7 @@ func marshalAllowedDays(days []string) sql.NullString {
 }
 
 // ListGoals returns all active goals with this_week instance counts.
+// Uses a batch query (2 queries total) instead of N+1.
 func ListGoals(q *sqlcdb.Queries, log zerolog.Logger) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		ctx := r.Context()
@@ -114,30 +104,41 @@ func ListGoals(q *sqlcdb.Queries, log zerolog.Logger) http.HandlerFunc {
 		}
 
 		weekStart := goal.MondayOf(time.Now())
-		responses := make([]goalResponse, 0, len(goals))
 
+		// Batch fetch instance counts for all goals in one query.
+		counts, err := q.ListGoalInstanceCountsForWeek(ctx, weekStart)
+		if err != nil {
+			log.Error().Err(err).Msg("failed to list instance counts")
+			RespondError(w, http.StatusInternalServerError, "internal_error", "failed to load goal instance counts", log)
+			return
+		}
+
+		// Build map[goalID] → {scheduled, completed}.
+		type weekCounts struct{ scheduled, completed int }
+		countsMap := make(map[int64]*weekCounts)
+		for _, c := range counts {
+			wc, ok := countsMap[c.GoalID]
+			if !ok {
+				wc = &weekCounts{}
+				countsMap[c.GoalID] = wc
+			}
+			switch c.Status {
+			case "scheduled":
+				wc.scheduled = int(c.Count)
+			case "completed":
+				wc.completed = int(c.Count)
+			}
+		}
+
+		responses := make([]goalResponse, 0, len(goals))
 		for _, g := range goals {
 			resp := goalToResponse(g)
 
-			instances, err := q.ListGoalInstancesByGoalAndWeek(ctx, sqlcdb.ListGoalInstancesByGoalAndWeekParams{
-				GoalID:    g.ID,
-				WeekStart: weekStart,
-			})
-			if err != nil {
-				log.Error().Err(err).Int64("goal_id", g.ID).Msg("failed to list instances for goal")
-				RespondError(w, http.StatusInternalServerError, "internal_error", "failed to load goal instances", log)
-				return
-			}
-
 			scheduled := 0
 			completed := 0
-			for _, inst := range instances {
-				switch inst.Status {
-				case "scheduled":
-					scheduled++
-				case "completed":
-					completed++
-				}
+			if wc, ok := countsMap[g.ID]; ok {
+				scheduled = wc.scheduled
+				completed = wc.completed
 			}
 
 			fulfilled := scheduled + completed
@@ -619,7 +620,7 @@ func CompleteGoalInstance(q *sqlcdb.Queries, log zerolog.Logger) http.HandlerFun
 			return
 		}
 
-		RespondJSON(w, http.StatusOK, updated, log)
+		RespondJSON(w, http.StatusOK, map[string]any{"instance": updated}, log)
 	}
 }
 

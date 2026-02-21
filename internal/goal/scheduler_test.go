@@ -394,3 +394,89 @@ func TestFindNextSlot_NoSlot(t *testing.T) {
 		t.Errorf("expected nil, got %+v", placement)
 	}
 }
+
+// --- splitGap unit tests ---
+
+func TestSplitGap_FullConsume(t *testing.T) {
+	gaps := []gap.Gap{{
+		StartTime: monday.Add(9 * time.Hour), EndTime: monday.Add(10 * time.Hour),
+		DurationMinutes: 60, TimeOfDay: "morning",
+	}}
+	result := splitGap(gaps, monday.Add(9*time.Hour), monday.Add(10*time.Hour))
+	if len(result) != 0 {
+		t.Errorf("got %d gaps, want 0 (full consume)", len(result))
+	}
+}
+
+func TestSplitGap_AtStart(t *testing.T) {
+	gaps := []gap.Gap{{
+		StartTime: monday.Add(9 * time.Hour), EndTime: monday.Add(12 * time.Hour),
+		DurationMinutes: 180, TimeOfDay: "morning",
+	}}
+	result := splitGap(gaps, monday.Add(9*time.Hour), monday.Add(10*time.Hour))
+	if len(result) != 1 {
+		t.Fatalf("got %d gaps, want 1", len(result))
+	}
+	if !result[0].StartTime.Equal(monday.Add(10 * time.Hour)) {
+		t.Errorf("StartTime = %v, want 10:00", result[0].StartTime)
+	}
+	if result[0].DurationMinutes != 120 {
+		t.Errorf("DurationMinutes = %d, want 120", result[0].DurationMinutes)
+	}
+}
+
+func TestSplitGap_AtEnd(t *testing.T) {
+	gaps := []gap.Gap{{
+		StartTime: monday.Add(9 * time.Hour), EndTime: monday.Add(12 * time.Hour),
+		DurationMinutes: 180, TimeOfDay: "morning",
+	}}
+	result := splitGap(gaps, monday.Add(11*time.Hour), monday.Add(12*time.Hour))
+	if len(result) != 1 {
+		t.Fatalf("got %d gaps, want 1", len(result))
+	}
+	if !result[0].EndTime.Equal(monday.Add(11 * time.Hour)) {
+		t.Errorf("EndTime = %v, want 11:00", result[0].EndTime)
+	}
+	if result[0].DurationMinutes != 120 {
+		t.Errorf("DurationMinutes = %d, want 120", result[0].DurationMinutes)
+	}
+}
+
+func TestSplitGap_InMiddle(t *testing.T) {
+	gaps := []gap.Gap{{
+		StartTime: monday.Add(9 * time.Hour), EndTime: monday.Add(12 * time.Hour),
+		DurationMinutes: 180, TimeOfDay: "morning",
+	}}
+	result := splitGap(gaps, monday.Add(10*time.Hour), monday.Add(11*time.Hour))
+	if len(result) != 2 {
+		t.Fatalf("got %d gaps, want 2", len(result))
+	}
+	// Left remainder: 09:00–10:00
+	if !result[0].EndTime.Equal(monday.Add(10 * time.Hour)) {
+		t.Errorf("left EndTime = %v, want 10:00", result[0].EndTime)
+	}
+	if result[0].DurationMinutes != 60 {
+		t.Errorf("left DurationMinutes = %d, want 60", result[0].DurationMinutes)
+	}
+	// Right remainder: 11:00–12:00
+	if !result[1].StartTime.Equal(monday.Add(11 * time.Hour)) {
+		t.Errorf("right StartTime = %v, want 11:00", result[1].StartTime)
+	}
+	if result[1].DurationMinutes != 60 {
+		t.Errorf("right DurationMinutes = %d, want 60", result[1].DurationMinutes)
+	}
+}
+
+func TestSplitGap_NoOverlap(t *testing.T) {
+	gaps := []gap.Gap{{
+		StartTime: monday.Add(9 * time.Hour), EndTime: monday.Add(10 * time.Hour),
+		DurationMinutes: 60, TimeOfDay: "morning",
+	}}
+	result := splitGap(gaps, monday.Add(14*time.Hour), monday.Add(15*time.Hour))
+	if len(result) != 1 {
+		t.Fatalf("got %d gaps, want 1 (no overlap)", len(result))
+	}
+	if result[0].DurationMinutes != 60 {
+		t.Errorf("DurationMinutes = %d, want 60 (unchanged)", result[0].DurationMinutes)
+	}
+}

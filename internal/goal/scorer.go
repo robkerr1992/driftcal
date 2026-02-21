@@ -53,18 +53,17 @@ func ScoreSlot(
 }
 
 // scoreSpacing rewards slots that are far from existing instances of the same goal.
-// Returns 0–WeightSpacing based on min distance from any existing instance.
+// Returns 0–WeightSpacing based on min start-to-start distance from any existing instance.
+// Uses start-to-start distance to match meetsMinSpacing semantics.
 func scoreSpacing(candidate gap.Gap, instances []sqlcdb.GoalInstance) int {
 	if len(instances) == 0 {
 		return WeightSpacing // maximum spacing if no existing instances
 	}
 
 	minDistHours := math.MaxFloat64
-	candidateMid := candidate.StartTime.Add(candidate.EndTime.Sub(candidate.StartTime) / 2)
 
 	for _, inst := range instances {
-		instMid := inst.ScheduledStart.Add(inst.ScheduledEnd.Sub(inst.ScheduledStart) / 2)
-		distHours := math.Abs(candidateMid.Sub(instMid).Hours())
+		distHours := math.Abs(candidate.StartTime.Sub(inst.ScheduledStart).Hours())
 		if distHours < minDistHours {
 			minDistHours = distHours
 		}

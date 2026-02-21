@@ -89,7 +89,7 @@ func Schedule(input ScheduleInput) (ScheduleResult, error) {
 			continue
 		}
 
-		ad := parseAllowedDaysJSON(g.AllowedDays)
+		ad := ParseAllowedDays(g.AllowedDays)
 		needs = append(needs, goalNeed{
 			Goal:          g,
 			Needed:        needed,
@@ -158,6 +158,85 @@ func Schedule(input ScheduleInput) (ScheduleResult, error) {
 	return result, nil
 }
 
+// candidateInput holds the parameters needed to evaluate a candidate gap.
+type candidateInput struct {
+	Goal              sqlcdb.RecurringGoal
+	AllowedDaySet     map[string]bool
+	ExistingInstances []sqlcdb.GoalInstance
+	EnergyProfile     map[string]string
+	Loc               *time.Location
+}
+
+// evaluateCandidate checks whether a candidate gap can hold the goal and returns
+// the placement and score. Returns nil if the gap doesn't work.
+func evaluateCandidate(candidate gap.Gap, ci candidateInput) (*Placement, int) {
+	g := ci.Goal
+
+	// 1. Check duration fits.
+	if candidate.DurationMinutes < int(g.DurationMinutes) {
+		return nil, -1
+	}
+
+	// 2. Check allowed day.
+	dayAbbr := dayAbbreviations[candidate.StartTime.In(ci.Loc).Weekday()]
+	if len(ci.AllowedDaySet) > 0 && !ci.AllowedDaySet[dayAbbr] {
+		return nil, -1
+	}
+
+	// 3. Clamp slot start to max(gap start, earliest_hour).
+	slotStart := candidate.StartTime.In(ci.Loc)
+	startHHMM := slotStart.Format("15:04")
+	if startHHMM < g.EarliestHour {
+		dayLocal := time.Date(slotStart.Year(), slotStart.Month(), slotStart.Day(), 0, 0, 0, 0, ci.Loc)
+		clamped, err := gap.ParseHHMM(g.EarliestHour, dayLocal, ci.Loc)
+		if err == nil {
+			slotStart = clamped.In(ci.Loc)
+		}
+	}
+
+	slotEnd := slotStart.Add(time.Duration(g.DurationMinutes) * time.Minute)
+
+	// 4. Verify slot fits within gap after clamping.
+	if slotEnd.After(candidate.EndTime.In(ci.Loc)) {
+		return nil, -1
+	}
+
+	// 5. Check latest_hour.
+	if slotEnd.Format("15:04") > g.LatestHour {
+		return nil, -1
+	}
+
+	// 6. Check min_gap_between_hours spacing.
+	if !meetsMinSpacing(slotStart, ci.ExistingInstances, g.MinGapBetweenHours) {
+		return nil, -1
+	}
+
+	// 7. Score and return placement.
+	fitGap := gap.Gap{
+		StartTime:       slotStart.In(time.UTC),
+		EndTime:         slotEnd.In(time.UTC),
+		DurationMinutes: int(g.DurationMinutes),
+		TimeOfDay:       candidate.TimeOfDay,
+	}
+
+	score := ScoreSlot(g, fitGap, ci.ExistingInstances, ci.EnergyProfile, ci.Loc)
+	placement := &Placement{
+		GoalID:         g.ID,
+		ScheduledStart: fitGap.StartTime,
+		ScheduledEnd:   fitGap.EndTime,
+	}
+	return placement, score
+}
+
+// toSet converts a string slice to a map for O(1) lookups.
+func toSet(days []string) map[string]bool {
+	m := make(map[string]bool, len(days))
+	for _, d := range days {
+		m[d] = true
+	}
+	return m
+}
+
 // findBestSlot finds the highest-scoring gap slot for a goal.
 func findBestSlot(
 	g sqlcdb.RecurringGoal,
@@ -166,57 +245,22 @@ func findBestSlot(
 	existingInstances []sqlcdb.GoalInstance,
 	input ScheduleInput,
 ) *Placement {
+	ci := candidateInput{
+		Goal:              g,
+		AllowedDaySet:     toSet(allowedDays),
+		ExistingInstances: existingInstances,
+		EnergyProfile:     input.EnergyProfile,
+		Loc:               input.UserTimezone,
+	}
+
 	bestScore := -1
 	var best *Placement
 
-	allowedDaySet := make(map[string]bool, len(allowedDays))
-	for _, d := range allowedDays {
-		allowedDaySet[d] = true
-	}
-
 	for _, candidate := range gaps {
-		if candidate.DurationMinutes < int(g.DurationMinutes) {
-			continue
-		}
-
-		// Check allowed days constraint.
-		dayAbbr := dayAbbreviations[candidate.StartTime.In(input.UserTimezone).Weekday()]
-		if len(allowedDaySet) > 0 && !allowedDaySet[dayAbbr] {
-			continue
-		}
-
-		// Check earliest/latest hour constraint.
-		slotStart := candidate.StartTime.In(input.UserTimezone)
-		slotEnd := slotStart.Add(time.Duration(g.DurationMinutes) * time.Minute)
-
-		startHHMM := slotStart.Format("15:04")
-		endHHMM := slotEnd.Format("15:04")
-
-		if startHHMM < g.EarliestHour || endHHMM > g.LatestHour {
-			continue
-		}
-
-		// Check min_gap_between_hours spacing.
-		if !meetsMinSpacing(slotStart, existingInstances, g.MinGapBetweenHours) {
-			continue
-		}
-
-		// Create a sub-gap that exactly fits the goal duration at the start of the gap.
-		fitGap := gap.Gap{
-			StartTime:       candidate.StartTime,
-			EndTime:         candidate.StartTime.Add(time.Duration(g.DurationMinutes) * time.Minute),
-			DurationMinutes: int(g.DurationMinutes),
-			TimeOfDay:       candidate.TimeOfDay,
-		}
-
-		score := ScoreSlot(g, fitGap, existingInstances, input.EnergyProfile, input.UserTimezone)
-		if score > bestScore {
+		placement, score := evaluateCandidate(candidate, ci)
+		if placement != nil && score > bestScore {
 			bestScore = score
-			best = &Placement{
-				GoalID:         g.ID,
-				ScheduledStart: fitGap.StartTime,
-				ScheduledEnd:   fitGap.EndTime,
-			}
+			best = placement
 		}
 	}
 
@@ -351,65 +395,38 @@ func FindNextSlot(
 	energyProfile map[string]string,
 	loc *time.Location,
 ) *Placement {
-	allowedDays := parseAllowedDaysJSON(g.AllowedDays)
-	allowedDaySet := make(map[string]bool, len(allowedDays))
-	for _, d := range allowedDays {
-		allowedDaySet[d] = true
+	ci := candidateInput{
+		Goal:              g,
+		AllowedDaySet:     toSet(ParseAllowedDays(g.AllowedDays)),
+		ExistingInstances: existingInstances,
+		EnergyProfile:     energyProfile,
+		Loc:               loc,
 	}
 
 	bestScore := -1
 	var best *Placement
 
 	for _, candidate := range gaps {
-		// Must be after the skip time.
+		// FindNextSlot-specific pre-filters: must be after skip time and within week.
 		if !candidate.StartTime.After(after) {
 			continue
 		}
-		// Must be within the week.
 		if !candidate.StartTime.Before(weekEnd) {
 			continue
 		}
-		if candidate.DurationMinutes < int(g.DurationMinutes) {
-			continue
-		}
 
-		dayAbbr := dayAbbreviations[candidate.StartTime.In(loc).Weekday()]
-		if len(allowedDaySet) > 0 && !allowedDaySet[dayAbbr] {
-			continue
-		}
-
-		slotStart := candidate.StartTime.In(loc)
-		slotEnd := slotStart.Add(time.Duration(g.DurationMinutes) * time.Minute)
-		if slotStart.Format("15:04") < g.EarliestHour || slotEnd.Format("15:04") > g.LatestHour {
-			continue
-		}
-
-		if !meetsMinSpacing(slotStart, existingInstances, g.MinGapBetweenHours) {
-			continue
-		}
-
-		fitGap := gap.Gap{
-			StartTime:       candidate.StartTime,
-			EndTime:         candidate.StartTime.Add(time.Duration(g.DurationMinutes) * time.Minute),
-			DurationMinutes: int(g.DurationMinutes),
-			TimeOfDay:       candidate.TimeOfDay,
-		}
-
-		score := ScoreSlot(g, fitGap, existingInstances, energyProfile, loc)
-		if score > bestScore {
+		placement, score := evaluateCandidate(candidate, ci)
+		if placement != nil && score > bestScore {
 			bestScore = score
-			best = &Placement{
-				GoalID:         g.ID,
-				ScheduledStart: fitGap.StartTime,
-				ScheduledEnd:   fitGap.EndTime,
-			}
+			best = placement
 		}
 	}
 
 	return best
 }
 
-func parseAllowedDaysJSON(s sql.NullString) []string {
+// ParseAllowedDays parses the JSON-encoded allowed_days column into a string slice.
+func ParseAllowedDays(s sql.NullString) []string {
 	if !s.Valid || s.String == "" {
 		return nil
 	}

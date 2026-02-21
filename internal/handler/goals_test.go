@@ -437,12 +437,14 @@ func TestCompleteGoalInstance_StatusTransition(t *testing.T) {
 		t.Fatalf("status = %d, want %d, body: %s", rec.Code, http.StatusOK, rec.Body.String())
 	}
 
-	var resp sqlcdb.GoalInstance
+	var resp struct {
+		Instance sqlcdb.GoalInstance `json:"instance"`
+	}
 	if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
 		t.Fatalf("decoding: %v", err)
 	}
-	if resp.Status != "completed" {
-		t.Errorf("Status = %q, want completed", resp.Status)
+	if resp.Instance.Status != "completed" {
+		t.Errorf("Status = %q, want completed", resp.Instance.Status)
 	}
 }
 
@@ -477,5 +479,305 @@ func TestSkipGoalInstance_WrongGoal(t *testing.T) {
 
 	if rec.Code != http.StatusNotFound {
 		t.Fatalf("status = %d, want %d", rec.Code, http.StatusNotFound)
+	}
+}
+
+// --- Test Group 3: UpdateGoal validation ---
+
+func TestUpdateGoal_NotFound(t *testing.T) {
+	db := database.TestDB(t)
+	q := sqlcdb.New(db)
+
+	r := chi.NewRouter()
+	r.Patch("/api/goals/{id}", UpdateGoal(q, zerolog.Nop()))
+
+	req := httptest.NewRequest(http.MethodPatch, "/api/goals/99999", strings.NewReader(`{"label":"X"}`))
+	rec := httptest.NewRecorder()
+	r.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusNotFound)
+	}
+}
+
+func TestUpdateGoal_InvalidCategory(t *testing.T) {
+	db := database.TestDB(t)
+	q := sqlcdb.New(db)
+
+	created := createTestGoal(t, q, "Test")
+	r := chi.NewRouter()
+	r.Patch("/api/goals/{id}", UpdateGoal(q, zerolog.Nop()))
+
+	body := `{"category":"invalid"}`
+	req := httptest.NewRequest(http.MethodPatch, "/api/goals/"+strconv.FormatInt(created.ID, 10), strings.NewReader(body))
+	rec := httptest.NewRecorder()
+	r.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusBadRequest)
+	}
+}
+
+func TestUpdateGoal_DurationTooShort(t *testing.T) {
+	db := database.TestDB(t)
+	q := sqlcdb.New(db)
+
+	created := createTestGoal(t, q, "Test")
+	r := chi.NewRouter()
+	r.Patch("/api/goals/{id}", UpdateGoal(q, zerolog.Nop()))
+
+	body := `{"duration_minutes":5}`
+	req := httptest.NewRequest(http.MethodPatch, "/api/goals/"+strconv.FormatInt(created.ID, 10), strings.NewReader(body))
+	rec := httptest.NewRecorder()
+	r.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusBadRequest)
+	}
+}
+
+func TestUpdateGoal_PriorityOutOfRange(t *testing.T) {
+	db := database.TestDB(t)
+	q := sqlcdb.New(db)
+
+	created := createTestGoal(t, q, "Test")
+	r := chi.NewRouter()
+	r.Patch("/api/goals/{id}", UpdateGoal(q, zerolog.Nop()))
+
+	body := `{"priority":10}`
+	req := httptest.NewRequest(http.MethodPatch, "/api/goals/"+strconv.FormatInt(created.ID, 10), strings.NewReader(body))
+	rec := httptest.NewRecorder()
+	r.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusBadRequest)
+	}
+}
+
+func TestUpdateGoal_HoursInvertedAfterMerge(t *testing.T) {
+	db := database.TestDB(t)
+	q := sqlcdb.New(db)
+
+	created := createTestGoal(t, q, "Test")
+	r := chi.NewRouter()
+	r.Patch("/api/goals/{id}", UpdateGoal(q, zerolog.Nop()))
+
+	// Set earliest > existing latest (22:00).
+	body := `{"earliest_hour":"23:00"}`
+	req := httptest.NewRequest(http.MethodPatch, "/api/goals/"+strconv.FormatInt(created.ID, 10), strings.NewReader(body))
+	rec := httptest.NewRecorder()
+	r.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want %d, body: %s", rec.Code, http.StatusBadRequest, rec.Body.String())
+	}
+}
+
+// --- Test Group 4: Handler edge cases ---
+
+func TestSkipGoalInstance_AlreadySkipped(t *testing.T) {
+	db := database.TestDB(t)
+	q := sqlcdb.New(db)
+	log := zerolog.Nop()
+
+	created := createTestGoal(t, q, "Skip Twice")
+	weekStart := goal.MondayOf(time.Now())
+	inst, _ := q.CreateGoalInstance(t.Context(), sqlcdb.CreateGoalInstanceParams{
+		GoalID: created.ID, WeekStart: weekStart,
+		ScheduledStart: weekStart.Add(9 * time.Hour), ScheduledEnd: weekStart.Add(10 * time.Hour),
+	})
+
+	r := chi.NewRouter()
+	r.Post("/api/goals/{id}/instances/{instance_id}/skip", SkipGoalInstance(q, log))
+
+	url := "/api/goals/" + strconv.FormatInt(created.ID, 10) + "/instances/" + strconv.FormatInt(inst.ID, 10) + "/skip"
+
+	// First skip succeeds.
+	req := httptest.NewRequest(http.MethodPost, url, nil)
+	rec := httptest.NewRecorder()
+	r.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("first skip: status = %d, want %d", rec.Code, http.StatusOK)
+	}
+
+	// Second skip fails.
+	req = httptest.NewRequest(http.MethodPost, url, nil)
+	rec = httptest.NewRecorder()
+	r.ServeHTTP(rec, req)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("second skip: status = %d, want %d", rec.Code, http.StatusBadRequest)
+	}
+}
+
+func TestCompleteGoalInstance_AlreadyCompleted(t *testing.T) {
+	db := database.TestDB(t)
+	q := sqlcdb.New(db)
+	log := zerolog.Nop()
+
+	created := createTestGoal(t, q, "Complete Twice")
+	weekStart := goal.MondayOf(time.Now())
+	inst, _ := q.CreateGoalInstance(t.Context(), sqlcdb.CreateGoalInstanceParams{
+		GoalID: created.ID, WeekStart: weekStart,
+		ScheduledStart: weekStart.Add(9 * time.Hour), ScheduledEnd: weekStart.Add(10 * time.Hour),
+	})
+
+	r := chi.NewRouter()
+	r.Post("/api/goals/{id}/instances/{instance_id}/complete", CompleteGoalInstance(q, log))
+
+	url := "/api/goals/" + strconv.FormatInt(created.ID, 10) + "/instances/" + strconv.FormatInt(inst.ID, 10) + "/complete"
+
+	// First complete succeeds.
+	req := httptest.NewRequest(http.MethodPost, url, nil)
+	rec := httptest.NewRecorder()
+	r.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("first complete: status = %d, want %d", rec.Code, http.StatusOK)
+	}
+
+	// Second complete fails.
+	req = httptest.NewRequest(http.MethodPost, url, nil)
+	rec = httptest.NewRecorder()
+	r.ServeHTTP(rec, req)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("second complete: status = %d, want %d", rec.Code, http.StatusBadRequest)
+	}
+}
+
+func TestSkipGoalInstance_NonExistent(t *testing.T) {
+	db := database.TestDB(t)
+	q := sqlcdb.New(db)
+
+	created := createTestGoal(t, q, "NonExist")
+	r := chi.NewRouter()
+	r.Post("/api/goals/{id}/instances/{instance_id}/skip", SkipGoalInstance(q, zerolog.Nop()))
+
+	url := "/api/goals/" + strconv.FormatInt(created.ID, 10) + "/instances/99999/skip"
+	req := httptest.NewRequest(http.MethodPost, url, nil)
+	rec := httptest.NewRecorder()
+	r.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusNotFound)
+	}
+}
+
+func TestCompleteGoalInstance_WrongGoal(t *testing.T) {
+	db := database.TestDB(t)
+	q := sqlcdb.New(db)
+	log := zerolog.Nop()
+
+	goalA := createTestGoal(t, q, "Goal A")
+	goalB := createTestGoal(t, q, "Goal B")
+
+	weekStart := goal.MondayOf(time.Now())
+	inst, _ := q.CreateGoalInstance(t.Context(), sqlcdb.CreateGoalInstanceParams{
+		GoalID: goalB.ID, WeekStart: weekStart,
+		ScheduledStart: weekStart.Add(9 * time.Hour), ScheduledEnd: weekStart.Add(10 * time.Hour),
+	})
+
+	r := chi.NewRouter()
+	r.Post("/api/goals/{id}/instances/{instance_id}/complete", CompleteGoalInstance(q, log))
+
+	// Try to complete goalB's instance via goalA's URL.
+	url := "/api/goals/" + strconv.FormatInt(goalA.ID, 10) + "/instances/" + strconv.FormatInt(inst.ID, 10) + "/complete"
+	req := httptest.NewRequest(http.MethodPost, url, nil)
+	rec := httptest.NewRecorder()
+	r.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusNotFound)
+	}
+}
+
+func TestCreateGoal_MissingLabel(t *testing.T) {
+	db := database.TestDB(t)
+	q := sqlcdb.New(db)
+
+	h := CreateGoal(q, zerolog.Nop())
+	body := `{"category":"study","duration_minutes":60,"times_per_week":1}`
+	req := httptest.NewRequest(http.MethodPost, "/api/goals", strings.NewReader(body))
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusBadRequest)
+	}
+}
+
+func TestCreateGoal_DuplicateAllowedDays(t *testing.T) {
+	db := database.TestDB(t)
+	q := sqlcdb.New(db)
+
+	h := CreateGoal(q, zerolog.Nop())
+	body := `{"label":"Test","category":"study","duration_minutes":30,"times_per_week":1,"allowed_days":["mon","mon"]}`
+	req := httptest.NewRequest(http.MethodPost, "/api/goals", strings.NewReader(body))
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusBadRequest)
+	}
+}
+
+func TestListGoalInstances_ExplicitWeek(t *testing.T) {
+	db := database.TestDB(t)
+	q := sqlcdb.New(db)
+	log := zerolog.Nop()
+
+	created := createTestGoal(t, q, "Explicit Week")
+
+	weekStart := time.Date(2026, 2, 23, 0, 0, 0, 0, time.UTC)
+	_, err := q.CreateGoalInstance(t.Context(), sqlcdb.CreateGoalInstanceParams{
+		GoalID: created.ID, WeekStart: weekStart,
+		ScheduledStart: weekStart.Add(9 * time.Hour), ScheduledEnd: weekStart.Add(10 * time.Hour),
+	})
+	if err != nil {
+		t.Fatalf("creating instance: %v", err)
+	}
+
+	r := chi.NewRouter()
+	r.Get("/api/goals/{id}/instances", ListGoalInstances(q, log))
+
+	req := httptest.NewRequest(http.MethodGet, "/api/goals/"+strconv.FormatInt(created.ID, 10)+"/instances?week_start=2026-02-23", nil)
+	rec := httptest.NewRecorder()
+	r.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d, body: %s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+
+	var resp struct {
+		Instances []sqlcdb.GoalInstance `json:"instances"`
+	}
+	if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
+		t.Fatalf("decoding: %v", err)
+	}
+	if len(resp.Instances) != 1 {
+		t.Errorf("got %d instances, want 1", len(resp.Instances))
+	}
+}
+
+// --- Bug 1 regression: verify PreferredTimeOfDay serializes as a plain string ---
+
+func TestCreateGoal_PreferredTimeOfDayString(t *testing.T) {
+	db := database.TestDB(t)
+	q := sqlcdb.New(db)
+
+	h := CreateGoal(q, zerolog.Nop())
+	body := `{"label":"TOD Test","category":"study","duration_minutes":60,"times_per_week":1,"preferred_time_of_day":"morning"}`
+	req := httptest.NewRequest(http.MethodPost, "/api/goals", strings.NewReader(body))
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("status = %d, want %d, body: %s", rec.Code, http.StatusCreated, rec.Body.String())
+	}
+
+	var resp goalResponse
+	if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
+		t.Fatalf("decoding: %v", err)
+	}
+	if resp.PreferredTimeOfDay != "morning" {
+		t.Errorf("PreferredTimeOfDay = %q, want %q", resp.PreferredTimeOfDay, "morning")
 	}
 }

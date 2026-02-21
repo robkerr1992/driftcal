@@ -85,6 +85,43 @@ func (q *Queries) GetGoalInstance(ctx context.Context, id int64) (GoalInstance, 
 	return i, err
 }
 
+const listGoalInstanceCountsForWeek = `-- name: ListGoalInstanceCountsForWeek :many
+SELECT goal_id, status, COUNT(*) AS count
+FROM goal_instances
+WHERE week_start = ?
+  AND status IN ('scheduled', 'completed')
+GROUP BY goal_id, status
+`
+
+type ListGoalInstanceCountsForWeekRow struct {
+	GoalID int64  `json:"goal_id"`
+	Status string `json:"status"`
+	Count  int64  `json:"count"`
+}
+
+func (q *Queries) ListGoalInstanceCountsForWeek(ctx context.Context, weekStart time.Time) ([]ListGoalInstanceCountsForWeekRow, error) {
+	rows, err := q.db.QueryContext(ctx, listGoalInstanceCountsForWeek, weekStart)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListGoalInstanceCountsForWeekRow{}
+	for rows.Next() {
+		var i ListGoalInstanceCountsForWeekRow
+		if err := rows.Scan(&i.GoalID, &i.Status, &i.Count); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listGoalInstancesByGoalAndWeek = `-- name: ListGoalInstancesByGoalAndWeek :many
 SELECT id, goal_id, week_start, scheduled_start, scheduled_end, status, nylas_event_id, created_at, updated_at FROM goal_instances
 WHERE goal_id = ? AND week_start = ?
