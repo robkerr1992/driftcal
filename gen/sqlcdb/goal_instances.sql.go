@@ -7,8 +7,127 @@ package sqlcdb
 
 import (
 	"context"
+	"database/sql"
 	"time"
 )
+
+const countFulfilledInstancesForWeek = `-- name: CountFulfilledInstancesForWeek :one
+SELECT COUNT(*) AS count FROM goal_instances
+WHERE goal_id = ? AND week_start = ?
+  AND status IN ('scheduled', 'completed')
+`
+
+type CountFulfilledInstancesForWeekParams struct {
+	GoalID    int64     `json:"goal_id"`
+	WeekStart time.Time `json:"week_start"`
+}
+
+func (q *Queries) CountFulfilledInstancesForWeek(ctx context.Context, arg CountFulfilledInstancesForWeekParams) (int64, error) {
+	row := q.db.QueryRowContext(ctx, countFulfilledInstancesForWeek, arg.GoalID, arg.WeekStart)
+	var count int64
+	err := row.Scan(&count)
+	return count, err
+}
+
+const createGoalInstance = `-- name: CreateGoalInstance :one
+INSERT INTO goal_instances (goal_id, week_start, scheduled_start, scheduled_end)
+VALUES (?, ?, ?, ?)
+RETURNING id, goal_id, week_start, scheduled_start, scheduled_end, status, nylas_event_id, created_at, updated_at
+`
+
+type CreateGoalInstanceParams struct {
+	GoalID         int64     `json:"goal_id"`
+	WeekStart      time.Time `json:"week_start"`
+	ScheduledStart time.Time `json:"scheduled_start"`
+	ScheduledEnd   time.Time `json:"scheduled_end"`
+}
+
+func (q *Queries) CreateGoalInstance(ctx context.Context, arg CreateGoalInstanceParams) (GoalInstance, error) {
+	row := q.db.QueryRowContext(ctx, createGoalInstance,
+		arg.GoalID,
+		arg.WeekStart,
+		arg.ScheduledStart,
+		arg.ScheduledEnd,
+	)
+	var i GoalInstance
+	err := row.Scan(
+		&i.ID,
+		&i.GoalID,
+		&i.WeekStart,
+		&i.ScheduledStart,
+		&i.ScheduledEnd,
+		&i.Status,
+		&i.NylasEventID,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+	)
+	return i, err
+}
+
+const getGoalInstance = `-- name: GetGoalInstance :one
+SELECT id, goal_id, week_start, scheduled_start, scheduled_end, status, nylas_event_id, created_at, updated_at FROM goal_instances WHERE id = ?
+`
+
+func (q *Queries) GetGoalInstance(ctx context.Context, id int64) (GoalInstance, error) {
+	row := q.db.QueryRowContext(ctx, getGoalInstance, id)
+	var i GoalInstance
+	err := row.Scan(
+		&i.ID,
+		&i.GoalID,
+		&i.WeekStart,
+		&i.ScheduledStart,
+		&i.ScheduledEnd,
+		&i.Status,
+		&i.NylasEventID,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+	)
+	return i, err
+}
+
+const listGoalInstancesByGoalAndWeek = `-- name: ListGoalInstancesByGoalAndWeek :many
+SELECT id, goal_id, week_start, scheduled_start, scheduled_end, status, nylas_event_id, created_at, updated_at FROM goal_instances
+WHERE goal_id = ? AND week_start = ?
+ORDER BY scheduled_start
+`
+
+type ListGoalInstancesByGoalAndWeekParams struct {
+	GoalID    int64     `json:"goal_id"`
+	WeekStart time.Time `json:"week_start"`
+}
+
+func (q *Queries) ListGoalInstancesByGoalAndWeek(ctx context.Context, arg ListGoalInstancesByGoalAndWeekParams) ([]GoalInstance, error) {
+	rows, err := q.db.QueryContext(ctx, listGoalInstancesByGoalAndWeek, arg.GoalID, arg.WeekStart)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []GoalInstance{}
+	for rows.Next() {
+		var i GoalInstance
+		if err := rows.Scan(
+			&i.ID,
+			&i.GoalID,
+			&i.WeekStart,
+			&i.ScheduledStart,
+			&i.ScheduledEnd,
+			&i.Status,
+			&i.NylasEventID,
+			&i.CreatedAt,
+			&i.UpdatedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
 
 const listScheduledGoalInstancesInRange = `-- name: ListScheduledGoalInstancesInRange :many
 SELECT id, goal_id, week_start, scheduled_start, scheduled_end, status, nylas_event_id, created_at, updated_at FROM goal_instances
@@ -55,4 +174,96 @@ func (q *Queries) ListScheduledGoalInstancesInRange(ctx context.Context, arg Lis
 		return nil, err
 	}
 	return items, nil
+}
+
+const listScheduledGoalInstancesInRangeWithLabel = `-- name: ListScheduledGoalInstancesInRangeWithLabel :many
+SELECT gi.id, gi.goal_id, gi.week_start, gi.scheduled_start, gi.scheduled_end, gi.status, gi.nylas_event_id, gi.created_at, gi.updated_at, rg.label AS goal_label
+FROM goal_instances gi
+JOIN recurring_goals rg ON gi.goal_id = rg.id
+WHERE gi.status = 'scheduled'
+  AND gi.scheduled_start < ?1 AND gi.scheduled_end > ?2
+ORDER BY gi.scheduled_start
+`
+
+type ListScheduledGoalInstancesInRangeWithLabelParams struct {
+	RangeEnd   time.Time `json:"range_end"`
+	RangeStart time.Time `json:"range_start"`
+}
+
+type ListScheduledGoalInstancesInRangeWithLabelRow struct {
+	ID             int64          `json:"id"`
+	GoalID         int64          `json:"goal_id"`
+	WeekStart      time.Time      `json:"week_start"`
+	ScheduledStart time.Time      `json:"scheduled_start"`
+	ScheduledEnd   time.Time      `json:"scheduled_end"`
+	Status         string         `json:"status"`
+	NylasEventID   sql.NullString `json:"nylas_event_id"`
+	CreatedAt      time.Time      `json:"created_at"`
+	UpdatedAt      time.Time      `json:"updated_at"`
+	GoalLabel      string         `json:"goal_label"`
+}
+
+// Same as above but joins recurring_goals for the goal label.
+func (q *Queries) ListScheduledGoalInstancesInRangeWithLabel(ctx context.Context, arg ListScheduledGoalInstancesInRangeWithLabelParams) ([]ListScheduledGoalInstancesInRangeWithLabelRow, error) {
+	rows, err := q.db.QueryContext(ctx, listScheduledGoalInstancesInRangeWithLabel, arg.RangeEnd, arg.RangeStart)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListScheduledGoalInstancesInRangeWithLabelRow{}
+	for rows.Next() {
+		var i ListScheduledGoalInstancesInRangeWithLabelRow
+		if err := rows.Scan(
+			&i.ID,
+			&i.GoalID,
+			&i.WeekStart,
+			&i.ScheduledStart,
+			&i.ScheduledEnd,
+			&i.Status,
+			&i.NylasEventID,
+			&i.CreatedAt,
+			&i.UpdatedAt,
+			&i.GoalLabel,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const updateGoalInstanceStatus = `-- name: UpdateGoalInstanceStatus :one
+UPDATE goal_instances SET
+    status = ?,
+    updated_at = CURRENT_TIMESTAMP
+WHERE id = ?
+RETURNING id, goal_id, week_start, scheduled_start, scheduled_end, status, nylas_event_id, created_at, updated_at
+`
+
+type UpdateGoalInstanceStatusParams struct {
+	Status string `json:"status"`
+	ID     int64  `json:"id"`
+}
+
+func (q *Queries) UpdateGoalInstanceStatus(ctx context.Context, arg UpdateGoalInstanceStatusParams) (GoalInstance, error) {
+	row := q.db.QueryRowContext(ctx, updateGoalInstanceStatus, arg.Status, arg.ID)
+	var i GoalInstance
+	err := row.Scan(
+		&i.ID,
+		&i.GoalID,
+		&i.WeekStart,
+		&i.ScheduledStart,
+		&i.ScheduledEnd,
+		&i.Status,
+		&i.NylasEventID,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+	)
+	return i, err
 }

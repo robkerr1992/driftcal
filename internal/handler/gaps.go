@@ -113,7 +113,7 @@ func GapsHandler(q *sqlcdb.Queries, prefs *preferences.Store, log zerolog.Logger
 			return
 		}
 
-		goalInstances, err := q.ListScheduledGoalInstancesInRange(ctx, sqlcdb.ListScheduledGoalInstancesInRangeParams{
+		goalInstances, err := q.ListScheduledGoalInstancesInRangeWithLabel(ctx, sqlcdb.ListScheduledGoalInstancesInRangeWithLabelParams{
 			RangeStart: rangeStart,
 			RangeEnd:   rangeEnd,
 		})
@@ -193,6 +193,7 @@ func GapsHandler(q *sqlcdb.Queries, prefs *preferences.Store, log zerolog.Logger
 					dayGoals = append(dayGoals, gap.GoalInstance{
 						StartTime: gi.ScheduledStart,
 						EndTime:   gi.ScheduledEnd,
+						Label:     gi.GoalLabel,
 					})
 				}
 			}
