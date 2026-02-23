@@ -42,6 +42,23 @@ func (s *Server) routes() http.Handler {
 		r.Delete("/accounts/{id}", handler.DisconnectAccount(s.queries, s.log))
 		r.Get("/calendars", handler.ListCalendars(s.queries, s.log))
 		r.Patch("/calendars/{id}", handler.UpdateCalendar(s.queries, s.log))
+
+		r.Get("/gaps", handler.GapsHandler(s.queries, s.prefs, s.log))
+
+		r.Get("/protected-blocks", handler.ListProtectedBlocks(s.queries, s.log))
+		r.Post("/protected-blocks", handler.CreateProtectedBlock(s.queries, s.log))
+		r.Delete("/protected-blocks/{id}", handler.DeleteProtectedBlock(s.queries, s.log))
+
+		r.Get("/preferences", handler.GetPreferences(s.prefs, s.log))
+		r.Patch("/preferences", handler.UpdatePreferences(s.prefs, s.log))
+
+		r.Get("/goals", handler.ListGoals(s.queries, s.log))
+		r.Post("/goals", handler.CreateGoal(s.queries, s.log))
+		r.Patch("/goals/{id}", handler.UpdateGoal(s.queries, s.log))
+		r.Delete("/goals/{id}", handler.DeleteGoal(s.queries, s.log))
+		r.Get("/goals/{id}/instances", handler.ListGoalInstances(s.queries, s.log))
+		r.Post("/goals/{id}/instances/{instance_id}/skip", handler.SkipGoalInstance(s.queries, s.log))
+		r.Post("/goals/{id}/instances/{instance_id}/complete", handler.CompleteGoalInstance(s.queries, s.log))
 	})
 
 	return r
