@@ -46,3 +46,7 @@ FROM goal_instances
 WHERE week_start = ?
   AND status IN ('scheduled', 'completed')
 GROUP BY goal_id, status;
+
+-- name: UpdateGoalInstanceNylasEventID :one
+UPDATE goal_instances SET nylas_event_id = ?, updated_at = CURRENT_TIMESTAMP
+WHERE id = ? RETURNING *;

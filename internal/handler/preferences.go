@@ -24,6 +24,10 @@ var deferredPrefKeys = map[string]bool{
 	"interests":      true,
 	"energy_profile": true,
 	"digest_time":    true,
+	"latitude":       true,
+	"longitude":      true,
+	"city":           true,
+	"state":          true,
 }
 
 // GetPreferences returns all preferences in the nested API format.

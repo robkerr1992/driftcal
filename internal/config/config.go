@@ -29,6 +29,7 @@ type Config struct {
 
 	// Anthropic LLM
 	AnthropicAPIKey string
+	AnthropicModel  string
 
 	// Telegram bot
 	TelegramBotToken       string
@@ -68,6 +69,7 @@ func Load() (*Config, error) {
 		NylasAPIKey:           os.Getenv("NYLAS_API_KEY"),
 		NylasWebhookSecret:    os.Getenv("NYLAS_WEBHOOK_SECRET"),
 		AnthropicAPIKey:       os.Getenv("ANTHROPIC_API_KEY"),
+		AnthropicModel:        os.Getenv("ANTHROPIC_MODEL"),
 		TelegramBotToken:      os.Getenv("TELEGRAM_BOT_TOKEN"),
 		TelegramWebhookSecret: os.Getenv("TELEGRAM_WEBHOOK_SECRET"),
 		OpenWeatherAPIKey:     os.Getenv("OPENWEATHER_API_KEY"),

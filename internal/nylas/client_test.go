@@ -259,6 +259,75 @@ func TestDo_ResponseTooLarge(t *testing.T) {
 	}
 }
 
+func TestCreateEvent_Success(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			t.Errorf("method = %s, want POST", r.Method)
+		}
+		if r.URL.Path != "/v3/grants/grant-abc/events" {
+			t.Errorf("path = %s, want /v3/grants/grant-abc/events", r.URL.Path)
+		}
+		if r.URL.Query().Get("calendar_id") != "cal-1" {
+			t.Errorf("calendar_id = %q, want cal-1", r.URL.Query().Get("calendar_id"))
+		}
+		if auth := r.Header.Get("Authorization"); auth != "Bearer api-key" {
+			t.Errorf("Authorization = %q, want %q", auth, "Bearer api-key")
+		}
+
+		var body CreateEventRequest
+		json.NewDecoder(r.Body).Decode(&body)
+		if body.Title != "Study Go" {
+			t.Errorf("Title = %q, want Study Go", body.Title)
+		}
+
+		json.NewEncoder(w).Encode(struct {
+			Data Event `json:"data"`
+		}{
+			Data: Event{ID: "evt-new", Title: "Study Go"},
+		})
+	}))
+	defer srv.Close()
+
+	c := NewWithBaseURL("client-123", "api-key", srv.URL)
+	evt, err := c.CreateEvent(context.Background(), "grant-abc", "cal-1", CreateEventRequest{
+		Title: "Study Go",
+		When: EventWhen{
+			Object:    "timespan",
+			StartTime: 1700000000,
+			EndTime:   1700003600,
+		},
+		Busy: true,
+	})
+	if err != nil {
+		t.Fatalf("CreateEvent failed: %v", err)
+	}
+	if evt.ID != "evt-new" {
+		t.Errorf("ID = %q, want evt-new", evt.ID)
+	}
+	if evt.Title != "Study Go" {
+		t.Errorf("Title = %q, want Study Go", evt.Title)
+	}
+}
+
+func TestCreateEvent_Error(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusForbidden)
+		w.Write([]byte(`{"error":"forbidden"}`))
+	}))
+	defer srv.Close()
+
+	c := NewWithBaseURL("client-123", "api-key", srv.URL)
+	_, err := c.CreateEvent(context.Background(), "grant-abc", "cal-1", CreateEventRequest{
+		Title: "Test",
+	})
+	if err == nil {
+		t.Fatal("expected error for 403 response")
+	}
+	if !strings.Contains(err.Error(), "403") {
+		t.Errorf("error should mention status code, got: %v", err)
+	}
+}
+
 func TestListEvents_PaginationLimit(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		// Always return a next cursor to trigger pagination limit

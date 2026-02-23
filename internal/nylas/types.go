@@ -61,6 +61,14 @@ type listResponse[T any] struct {
 	NextCursor string `json:"next_cursor"`
 }
 
+// CreateEventRequest is the body sent to create a calendar event.
+type CreateEventRequest struct {
+	Title       string   `json:"title"`
+	Description string   `json:"description,omitempty"`
+	When        EventWhen `json:"when"`
+	Busy        bool     `json:"busy"`
+}
+
 // tokenExchangeRequest is the body sent to exchange an auth code.
 type tokenExchangeRequest struct {
 	ClientID    string `json:"client_id"`

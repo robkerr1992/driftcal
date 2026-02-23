@@ -15,6 +15,7 @@ import (
 	"github.com/robkerr1992/driftcal/gen/sqlcdb"
 	"github.com/robkerr1992/driftcal/internal/database"
 	"github.com/robkerr1992/driftcal/internal/goal"
+	"github.com/robkerr1992/driftcal/internal/preferences"
 )
 
 func createTestGoal(t *testing.T, q *sqlcdb.Queries, label string) goalResponse {
@@ -364,6 +365,7 @@ func TestSkipGoalInstance_StatusTransition(t *testing.T) {
 	db := database.TestDB(t)
 	q := sqlcdb.New(db)
 	log := zerolog.Nop()
+	prefs := preferences.New(q, db)
 
 	created := createTestGoal(t, q, "Skip Test")
 
@@ -378,7 +380,7 @@ func TestSkipGoalInstance_StatusTransition(t *testing.T) {
 		t.Fatalf("creating instance: %v", err)
 	}
 
-	skipH := SkipGoalInstance(q, log)
+	skipH := SkipGoalInstance(q, prefs, nil, log)
 	r := chi.NewRouter()
 	r.Post("/api/goals/{id}/instances/{instance_id}/skip", skipH)
 
@@ -401,9 +403,8 @@ func TestSkipGoalInstance_StatusTransition(t *testing.T) {
 	if resp.Instance.Status != "skipped" {
 		t.Errorf("Status = %q, want skipped", resp.Instance.Status)
 	}
-	if resp.Rescheduled != nil {
-		t.Errorf("Rescheduled = %v, want nil", resp.Rescheduled)
-	}
+	// With the reschedule logic active, a skip with ample gaps will reschedule.
+	// Just verify the response is well-formed (rescheduled may or may not be nil).
 }
 
 func TestCompleteGoalInstance_StatusTransition(t *testing.T) {
@@ -452,6 +453,7 @@ func TestSkipGoalInstance_WrongGoal(t *testing.T) {
 	db := database.TestDB(t)
 	q := sqlcdb.New(db)
 	log := zerolog.Nop()
+	prefs := preferences.New(q, db)
 
 	goal1 := createTestGoal(t, q, "Goal 1")
 	goal2 := createTestGoal(t, q, "Goal 2")
@@ -467,7 +469,7 @@ func TestSkipGoalInstance_WrongGoal(t *testing.T) {
 		t.Fatalf("creating instance: %v", err)
 	}
 
-	skipH := SkipGoalInstance(q, log)
+	skipH := SkipGoalInstance(q, prefs, nil, log)
 	r := chi.NewRouter()
 	r.Post("/api/goals/{id}/instances/{instance_id}/skip", skipH)
 
@@ -579,6 +581,7 @@ func TestSkipGoalInstance_AlreadySkipped(t *testing.T) {
 	db := database.TestDB(t)
 	q := sqlcdb.New(db)
 	log := zerolog.Nop()
+	prefs := preferences.New(q, db)
 
 	created := createTestGoal(t, q, "Skip Twice")
 	weekStart := goal.MondayOf(time.Now())
@@ -588,7 +591,7 @@ func TestSkipGoalInstance_AlreadySkipped(t *testing.T) {
 	})
 
 	r := chi.NewRouter()
-	r.Post("/api/goals/{id}/instances/{instance_id}/skip", SkipGoalInstance(q, log))
+	r.Post("/api/goals/{id}/instances/{instance_id}/skip", SkipGoalInstance(q, prefs, nil, log))
 
 	url := "/api/goals/" + strconv.FormatInt(created.ID, 10) + "/instances/" + strconv.FormatInt(inst.ID, 10) + "/skip"
 
@@ -646,10 +649,11 @@ func TestCompleteGoalInstance_AlreadyCompleted(t *testing.T) {
 func TestSkipGoalInstance_NonExistent(t *testing.T) {
 	db := database.TestDB(t)
 	q := sqlcdb.New(db)
+	prefs := preferences.New(q, db)
 
 	created := createTestGoal(t, q, "NonExist")
 	r := chi.NewRouter()
-	r.Post("/api/goals/{id}/instances/{instance_id}/skip", SkipGoalInstance(q, zerolog.Nop()))
+	r.Post("/api/goals/{id}/instances/{instance_id}/skip", SkipGoalInstance(q, prefs, nil, zerolog.Nop()))
 
 	url := "/api/goals/" + strconv.FormatInt(created.ID, 10) + "/instances/99999/skip"
 	req := httptest.NewRequest(http.MethodPost, url, nil)
@@ -779,5 +783,129 @@ func TestCreateGoal_PreferredTimeOfDayString(t *testing.T) {
 	}
 	if resp.PreferredTimeOfDay != "morning" {
 		t.Errorf("PreferredTimeOfDay = %q, want %q", resp.PreferredTimeOfDay, "morning")
+	}
+}
+
+// --- Reschedule tests ---
+
+func TestSkipGoalInstance_Reschedules(t *testing.T) {
+	db := database.TestDB(t)
+	q := sqlcdb.New(db)
+	log := zerolog.Nop()
+	prefs := preferences.New(q, db)
+
+	// Set timezone to UTC so active hours are straightforward.
+	prefs.Set(t.Context(), "timezone", "UTC")
+	prefs.Set(t.Context(), "active_hours_start", "07:00")
+	prefs.Set(t.Context(), "active_hours_end", "22:00")
+
+	created := createTestGoal(t, q, "Reschedule Test")
+
+	// Schedule instance early in the week — there should be plenty of room to reschedule.
+	weekStart := goal.MondayOf(time.Now())
+	inst, err := q.CreateGoalInstance(t.Context(), sqlcdb.CreateGoalInstanceParams{
+		GoalID:         created.ID,
+		WeekStart:      weekStart,
+		ScheduledStart: weekStart.Add(9 * time.Hour),
+		ScheduledEnd:   weekStart.Add(10 * time.Hour),
+	})
+	if err != nil {
+		t.Fatalf("creating instance: %v", err)
+	}
+
+	skipH := SkipGoalInstance(q, prefs, nil, log)
+	r := chi.NewRouter()
+	r.Post("/api/goals/{id}/instances/{instance_id}/skip", skipH)
+
+	url := "/api/goals/" + strconv.FormatInt(created.ID, 10) + "/instances/" + strconv.FormatInt(inst.ID, 10) + "/skip"
+	req := httptest.NewRequest(http.MethodPost, url, nil)
+	rec := httptest.NewRecorder()
+	r.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d, body: %s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+
+	var resp struct {
+		Instance    sqlcdb.GoalInstance  `json:"instance"`
+		Rescheduled *sqlcdb.GoalInstance `json:"rescheduled"`
+	}
+	if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
+		t.Fatalf("decoding: %v", err)
+	}
+	if resp.Instance.Status != "skipped" {
+		t.Errorf("Status = %q, want skipped", resp.Instance.Status)
+	}
+	if resp.Rescheduled == nil {
+		t.Fatal("expected rescheduled instance, got nil")
+	}
+	if resp.Rescheduled.GoalID != created.ID {
+		t.Errorf("Rescheduled.GoalID = %d, want %d", resp.Rescheduled.GoalID, created.ID)
+	}
+	if !resp.Rescheduled.ScheduledStart.After(inst.ScheduledEnd) {
+		t.Errorf("Rescheduled start %v should be after original end %v",
+			resp.Rescheduled.ScheduledStart, inst.ScheduledEnd)
+	}
+}
+
+func TestSkipGoalInstance_NoSlotAvailable(t *testing.T) {
+	db := database.TestDB(t)
+	q := sqlcdb.New(db)
+	log := zerolog.Nop()
+	prefs := preferences.New(q, db)
+
+	prefs.Set(t.Context(), "timezone", "UTC")
+	prefs.Set(t.Context(), "active_hours_start", "09:00")
+	prefs.Set(t.Context(), "active_hours_end", "10:00")
+
+	// Create goal restricted to Monday only — after skipping the only Monday
+	// slot, there's nowhere else to reschedule within the week.
+	h := CreateGoal(q, zerolog.Nop())
+	body := `{"label":"No Slot","category":"study","duration_minutes":60,"times_per_week":1,"allowed_days":["mon"]}`
+	createReq := httptest.NewRequest(http.MethodPost, "/api/goals", strings.NewReader(body))
+	createRec := httptest.NewRecorder()
+	h.ServeHTTP(createRec, createReq)
+	if createRec.Code != http.StatusCreated {
+		t.Fatalf("creating goal: status = %d, body: %s", createRec.Code, createRec.Body.String())
+	}
+	var created goalResponse
+	json.NewDecoder(createRec.Body).Decode(&created)
+
+	weekStart := goal.MondayOf(time.Now())
+	inst, err := q.CreateGoalInstance(t.Context(), sqlcdb.CreateGoalInstanceParams{
+		GoalID:         created.ID,
+		WeekStart:      weekStart,
+		ScheduledStart: weekStart.Add(9 * time.Hour),
+		ScheduledEnd:   weekStart.Add(10 * time.Hour),
+	})
+	if err != nil {
+		t.Fatalf("creating instance: %v", err)
+	}
+
+	skipH := SkipGoalInstance(q, prefs, nil, log)
+	r := chi.NewRouter()
+	r.Post("/api/goals/{id}/instances/{instance_id}/skip", skipH)
+
+	url := "/api/goals/" + strconv.FormatInt(created.ID, 10) + "/instances/" + strconv.FormatInt(inst.ID, 10) + "/skip"
+	req := httptest.NewRequest(http.MethodPost, url, nil)
+	rec := httptest.NewRecorder()
+	r.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d, body: %s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+
+	var resp struct {
+		Instance    sqlcdb.GoalInstance `json:"instance"`
+		Rescheduled any                `json:"rescheduled"`
+	}
+	if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
+		t.Fatalf("decoding: %v", err)
+	}
+	if resp.Instance.Status != "skipped" {
+		t.Errorf("Status = %q, want skipped", resp.Instance.Status)
+	}
+	if resp.Rescheduled != nil {
+		t.Errorf("Rescheduled = %v, want nil (no slot available)", resp.Rescheduled)
 	}
 }

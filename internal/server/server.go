@@ -15,8 +15,11 @@ import (
 	"github.com/robkerr1992/driftcal/gen/sqlcdb"
 	"github.com/robkerr1992/driftcal/internal/config"
 	"github.com/robkerr1992/driftcal/internal/nylas"
+	"github.com/robkerr1992/driftcal/internal/pipeline"
 	"github.com/robkerr1992/driftcal/internal/preferences"
+	"github.com/robkerr1992/driftcal/internal/suggest"
 	syncpkg "github.com/robkerr1992/driftcal/internal/sync"
+	"github.com/robkerr1992/driftcal/internal/weather"
 )
 
 // Server holds the application dependencies and runs the HTTP server.
@@ -27,8 +30,11 @@ type Server struct {
 	prefs     *preferences.Store
 	log       zerolog.Logger
 	startTime time.Time
-	nylas     *nylas.Client
-	syncer    *syncpkg.Syncer
+	nylas          *nylas.Client
+	syncer         *syncpkg.Syncer
+	weatherClient  *weather.Client
+	suggestClient  *suggest.Client
+	pipeline       *pipeline.Runner
 }
 
 // New creates a Server with all required dependencies.
@@ -44,10 +50,27 @@ func New(cfg *config.Config, db *sql.DB, log zerolog.Logger) *Server {
 		startTime: time.Now(),
 	}
 
-	// Initialize Nylas client and syncer only if configured
+	// Initialize Nylas client and syncer only if configured.
 	if cfg.NylasAPIKey != "" {
 		s.nylas = nylas.New(cfg.NylasClientID, cfg.NylasAPIKey)
 		s.syncer = syncpkg.New(s.nylas, q, log, 15*time.Minute)
+	}
+
+	// Initialize weather and suggestion clients if API keys present.
+	s.weatherClient = weather.New(cfg.OpenWeatherAPIKey)
+	s.suggestClient = suggest.New(cfg.AnthropicAPIKey, cfg.AnthropicModel)
+
+	// Initialize pipeline runner if suggestion client is available.
+	if s.suggestClient != nil {
+		var weatherFetcher pipeline.WeatherFetcher
+		if s.weatherClient != nil {
+			weatherFetcher = s.weatherClient
+		}
+		var nylasCreator pipeline.NylasEventCreator
+		if s.nylas != nil {
+			nylasCreator = s.nylas
+		}
+		s.pipeline = pipeline.New(q, s.syncer, s.prefs, weatherFetcher, s.suggestClient, nylasCreator, log)
 	}
 
 	return s
