@@ -1,8 +1,6 @@
 package handler
 
 import (
-	"context"
-	"database/sql"
 	"encoding/json"
 	"errors"
 	"net/http"
@@ -13,7 +11,7 @@ import (
 	"github.com/rs/zerolog"
 
 	"github.com/robkerr1992/driftcal/gen/sqlcdb"
-	"github.com/robkerr1992/driftcal/internal/nylas"
+	"github.com/robkerr1992/driftcal/internal/action"
 	"github.com/robkerr1992/driftcal/internal/pipeline"
 )
 
@@ -47,7 +45,7 @@ func ListSuggestions(q *sqlcdb.Queries, log zerolog.Logger) http.HandlerFunc {
 }
 
 // ApproveSuggestion transitions a pending suggestion to approved and records feedback.
-func ApproveSuggestion(q *sqlcdb.Queries, nylasClient NylasEventCreator, log zerolog.Logger) http.HandlerFunc {
+func ApproveSuggestion(q *sqlcdb.Queries, nylasClient action.NylasEventCreator, log zerolog.Logger) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		idStr := chi.URLParam(r, "id")
 		id, err := strconv.ParseInt(idStr, 10, 64)
@@ -56,45 +54,18 @@ func ApproveSuggestion(q *sqlcdb.Queries, nylasClient NylasEventCreator, log zer
 			return
 		}
 
-		ctx := r.Context()
-
-		suggestion, err := q.GetActivitySuggestion(ctx, id)
+		updated, err := action.ApproveSuggestion(r.Context(), q, nylasClient, id, log)
 		if err != nil {
-			if errors.Is(err, sql.ErrNoRows) {
+			switch {
+			case errors.Is(err, action.ErrNotFound):
 				RespondError(w, http.StatusNotFound, "not_found", "suggestion not found", log)
-				return
+			case errors.Is(err, action.ErrInvalidStatus):
+				RespondError(w, http.StatusBadRequest, "bad_request", "only pending suggestions can be approved", log)
+			default:
+				log.Error().Err(err).Int64("id", id).Msg("failed to approve suggestion")
+				RespondError(w, http.StatusInternalServerError, "internal_error", "failed to approve suggestion", log)
 			}
-			log.Error().Err(err).Int64("id", id).Msg("failed to get suggestion")
-			RespondError(w, http.StatusInternalServerError, "internal_error", "failed to get suggestion", log)
 			return
-		}
-
-		if suggestion.Status != "pending" {
-			RespondError(w, http.StatusBadRequest, "bad_request", "only pending suggestions can be approved", log)
-			return
-		}
-
-		updated, err := q.UpdateSuggestionStatus(ctx, sqlcdb.UpdateSuggestionStatusParams{
-			Status: "approved",
-			ID:     id,
-		})
-		if err != nil {
-			log.Error().Err(err).Int64("id", id).Msg("failed to approve suggestion")
-			RespondError(w, http.StatusInternalServerError, "internal_error", "failed to approve suggestion", log)
-			return
-		}
-
-		// Record feedback.
-		if _, err := q.CreateSuggestionFeedback(ctx, sqlcdb.CreateSuggestionFeedbackParams{
-			SuggestionID: id,
-			Action:       "approved",
-		}); err != nil {
-			log.Error().Err(err).Int64("suggestion_id", id).Msg("failed to create feedback record")
-		}
-
-		// Optionally push to Nylas.
-		if nylasClient != nil {
-			pushSuggestionToNylas(ctx, q, nylasClient, updated, log)
 		}
 
 		RespondJSON(w, http.StatusOK, map[string]any{"suggestion": updated}, log)
@@ -111,47 +82,23 @@ func RejectSuggestion(q *sqlcdb.Queries, log zerolog.Logger) http.HandlerFunc {
 			return
 		}
 
-		ctx := r.Context()
-
-		suggestion, err := q.GetActivitySuggestion(ctx, id)
-		if err != nil {
-			if errors.Is(err, sql.ErrNoRows) {
-				RespondError(w, http.StatusNotFound, "not_found", "suggestion not found", log)
-				return
-			}
-			log.Error().Err(err).Int64("id", id).Msg("failed to get suggestion")
-			RespondError(w, http.StatusInternalServerError, "internal_error", "failed to get suggestion", log)
-			return
-		}
-
-		if suggestion.Status != "pending" {
-			RespondError(w, http.StatusBadRequest, "bad_request", "only pending suggestions can be rejected", log)
-			return
-		}
-
-		// Parse optional notes.
 		var body struct {
 			Notes string `json:"notes"`
 		}
 		json.NewDecoder(r.Body).Decode(&body) // OK if body is empty
 
-		updated, err := q.UpdateSuggestionStatus(ctx, sqlcdb.UpdateSuggestionStatusParams{
-			Status: "rejected",
-			ID:     id,
-		})
+		updated, err := action.RejectSuggestion(r.Context(), q, id, body.Notes, log)
 		if err != nil {
-			log.Error().Err(err).Int64("id", id).Msg("failed to reject suggestion")
-			RespondError(w, http.StatusInternalServerError, "internal_error", "failed to reject suggestion", log)
+			switch {
+			case errors.Is(err, action.ErrNotFound):
+				RespondError(w, http.StatusNotFound, "not_found", "suggestion not found", log)
+			case errors.Is(err, action.ErrInvalidStatus):
+				RespondError(w, http.StatusBadRequest, "bad_request", "only pending suggestions can be rejected", log)
+			default:
+				log.Error().Err(err).Int64("id", id).Msg("failed to reject suggestion")
+				RespondError(w, http.StatusInternalServerError, "internal_error", "failed to reject suggestion", log)
+			}
 			return
-		}
-
-		// Record feedback.
-		if _, err := q.CreateSuggestionFeedback(ctx, sqlcdb.CreateSuggestionFeedbackParams{
-			SuggestionID: id,
-			Action:       "rejected",
-			EditNotes:    sql.NullString{String: body.Notes, Valid: body.Notes != ""},
-		}); err != nil {
-			log.Error().Err(err).Int64("suggestion_id", id).Msg("failed to create feedback record")
 		}
 
 		RespondJSON(w, http.StatusOK, map[string]any{"suggestion": updated}, log)
@@ -176,40 +123,5 @@ func TriggerPipeline(runner *pipeline.Runner, log zerolog.Logger) http.HandlerFu
 		}
 
 		RespondJSON(w, http.StatusOK, map[string]any{"status": "completed", "target_date": tomorrow.Format("2006-01-02")}, log)
-	}
-}
-
-func pushSuggestionToNylas(ctx context.Context, q *sqlcdb.Queries, nylasClient NylasEventCreator, s sqlcdb.ActivitySuggestion, log zerolog.Logger) {
-	// Best-effort: need grant_id and calendar_id from preferences.
-	// We can't access the preferences store directly here, so we check the DB.
-	grantPref, err := q.GetPreference(ctx, "nylas_grant_id")
-	if err != nil {
-		return
-	}
-	calPref, err := q.GetPreference(ctx, "nylas_calendar_id")
-	if err != nil {
-		return
-	}
-
-	evt, err := nylasClient.CreateEvent(ctx, grantPref.Value, calPref.Value, nylas.CreateEventRequest{
-		Title:       s.Title,
-		Description: s.Description,
-		When: nylas.EventWhen{
-			Object:    "timespan",
-			StartTime: s.StartTime.Unix(),
-			EndTime:   s.EndTime.Unix(),
-		},
-		Busy: false,
-	})
-	if err != nil {
-		log.Warn().Err(err).Int64("suggestion_id", s.ID).Msg("failed to push suggestion to Nylas")
-		return
-	}
-
-	if err := q.UpdateSuggestionNylasEventID(ctx, sqlcdb.UpdateSuggestionNylasEventIDParams{
-		NylasEventID: sql.NullString{String: evt.ID, Valid: true},
-		ID:           s.ID,
-	}); err != nil {
-		log.Warn().Err(err).Int64("suggestion_id", s.ID).Msg("failed to store nylas_event_id on suggestion")
 	}
 }

@@ -13,12 +13,14 @@ import (
 	"github.com/rs/zerolog"
 
 	"github.com/robkerr1992/driftcal/gen/sqlcdb"
+	"github.com/robkerr1992/driftcal/internal/action"
 	"github.com/robkerr1992/driftcal/internal/config"
 	"github.com/robkerr1992/driftcal/internal/nylas"
 	"github.com/robkerr1992/driftcal/internal/pipeline"
 	"github.com/robkerr1992/driftcal/internal/preferences"
 	"github.com/robkerr1992/driftcal/internal/suggest"
 	syncpkg "github.com/robkerr1992/driftcal/internal/sync"
+	"github.com/robkerr1992/driftcal/internal/telegram"
 	"github.com/robkerr1992/driftcal/internal/weather"
 )
 
@@ -35,6 +37,7 @@ type Server struct {
 	weatherClient  *weather.Client
 	suggestClient  *suggest.Client
 	pipeline       *pipeline.Runner
+	telegramBot    *telegram.Bot
 }
 
 // New creates a Server with all required dependencies.
@@ -73,6 +76,29 @@ func New(cfg *config.Config, db *sql.DB, log zerolog.Logger) *Server {
 		s.pipeline = pipeline.New(q, s.syncer, s.prefs, weatherFetcher, s.suggestClient, nylasCreator, log)
 	}
 
+	// Initialize Telegram bot if configured.
+	if cfg.TelegramBotToken != "" && cfg.TelegramAuthorizedUser != 0 {
+		tgClient := telegram.New(cfg.TelegramBotToken)
+		var nylasCreator telegram.PipelineRunner
+		if s.pipeline != nil {
+			nylasCreator = s.pipeline
+		}
+		var nylasEvt action.NylasEventCreator
+		if s.nylas != nil {
+			nylasEvt = s.nylas
+		}
+		s.telegramBot = telegram.NewBot(
+			tgClient,
+			cfg.TelegramAuthorizedUser,
+			cfg.TelegramWebhookSecret,
+			q,
+			s.prefs,
+			nylasEvt,
+			nylasCreator,
+			log,
+		)
+	}
+
 	return s
 }
 
@@ -100,6 +126,17 @@ func (s *Server) Run() error {
 	// Start syncer after server is up
 	if s.syncer != nil {
 		s.syncer.Start()
+	}
+
+	// Register Telegram webhook (non-fatal on error).
+	if s.telegramBot != nil && s.cfg.BaseURL != "" {
+		webhookURL := s.cfg.BaseURL + "/api/webhooks/telegram"
+		tgClient := telegram.New(s.cfg.TelegramBotToken)
+		if err := tgClient.SetWebhook(context.Background(), webhookURL, s.cfg.TelegramWebhookSecret); err != nil {
+			s.log.Warn().Err(err).Msg("failed to register Telegram webhook (non-fatal)")
+		} else {
+			s.log.Info().Str("url", webhookURL).Msg("Telegram webhook registered")
+		}
 	}
 
 	select {

@@ -1,7 +1,6 @@
 package handler
 
 import (
-	"context"
 	"database/sql"
 	"encoding/json"
 	"errors"
@@ -13,17 +12,10 @@ import (
 	"github.com/rs/zerolog"
 
 	"github.com/robkerr1992/driftcal/gen/sqlcdb"
-	"github.com/robkerr1992/driftcal/internal/gap"
+	"github.com/robkerr1992/driftcal/internal/action"
 	"github.com/robkerr1992/driftcal/internal/goal"
-	"github.com/robkerr1992/driftcal/internal/nylas"
 	"github.com/robkerr1992/driftcal/internal/preferences"
 )
-
-// NylasEventCreator abstracts Nylas event creation for testability.
-// A nil value is safe — callers should check before use.
-type NylasEventCreator interface {
-	CreateEvent(ctx context.Context, grantID, calendarID string, req nylas.CreateEventRequest) (*nylas.Event, error)
-}
 
 var validCategories = map[string]bool{
 	"study": true, "workout": true, "creative": true, "social": true,
@@ -546,219 +538,28 @@ func ListGoalInstances(q *sqlcdb.Queries, log zerolog.Logger) http.HandlerFunc {
 
 // SkipGoalInstance marks an instance as skipped and attempts to reschedule
 // it into a remaining gap within the same week.
-func SkipGoalInstance(q *sqlcdb.Queries, prefs *preferences.Store, nylasClient NylasEventCreator, log zerolog.Logger) http.HandlerFunc {
+func SkipGoalInstance(q *sqlcdb.Queries, prefs *preferences.Store, nylasClient action.NylasEventCreator, log zerolog.Logger) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		goalID, instanceID, ok := parseGoalInstanceIDs(w, r, log)
 		if !ok {
 			return
 		}
 
-		ctx := r.Context()
-
-		instance, err := q.GetGoalInstance(ctx, instanceID)
+		updated, rescheduled, err := action.SkipGoalInstance(r.Context(), q, prefs, nylasClient, goalID, instanceID, log)
 		if err != nil {
-			if errors.Is(err, sql.ErrNoRows) {
+			switch {
+			case errors.Is(err, action.ErrNotFound):
 				RespondError(w, http.StatusNotFound, "not_found", "goal instance not found", log)
-				return
+			case errors.Is(err, action.ErrInvalidStatus):
+				RespondError(w, http.StatusBadRequest, "bad_request", "only scheduled instances can be skipped", log)
+			default:
+				log.Error().Err(err).Int64("instance_id", instanceID).Msg("failed to skip goal instance")
+				RespondError(w, http.StatusInternalServerError, "internal_error", "failed to skip goal instance", log)
 			}
-			log.Error().Err(err).Int64("instance_id", instanceID).Msg("failed to get goal instance")
-			RespondError(w, http.StatusInternalServerError, "internal_error", "failed to get goal instance", log)
 			return
 		}
-
-		if instance.GoalID != goalID {
-			RespondError(w, http.StatusNotFound, "not_found", "goal instance not found", log)
-			return
-		}
-
-		if instance.Status != "scheduled" {
-			RespondError(w, http.StatusBadRequest, "bad_request", "only scheduled instances can be skipped", log)
-			return
-		}
-
-		updated, err := q.UpdateGoalInstanceStatus(ctx, sqlcdb.UpdateGoalInstanceStatusParams{
-			Status: "skipped",
-			ID:     instanceID,
-		})
-		if err != nil {
-			log.Error().Err(err).Int64("instance_id", instanceID).Msg("failed to skip goal instance")
-			RespondError(w, http.StatusInternalServerError, "internal_error", "failed to skip goal instance", log)
-			return
-		}
-
-		// Attempt reschedule within the same week.
-		rescheduled := tryReschedule(ctx, q, prefs, nylasClient, instance, log)
 
 		RespondJSON(w, http.StatusOK, map[string]any{"instance": updated, "rescheduled": rescheduled}, log)
-	}
-}
-
-// tryReschedule attempts to find a new slot for a skipped instance in the
-// remainder of the week. Returns the new instance or nil.
-func tryReschedule(
-	ctx context.Context,
-	q *sqlcdb.Queries,
-	prefs *preferences.Store,
-	nylasClient NylasEventCreator,
-	skipped sqlcdb.GoalInstance,
-	log zerolog.Logger,
-) *sqlcdb.GoalInstance {
-	g, err := q.GetGoal(ctx, skipped.GoalID)
-	if err != nil {
-		log.Warn().Err(err).Int64("goal_id", skipped.GoalID).Msg("reschedule: failed to load goal")
-		return nil
-	}
-
-	userTZ, err := prefs.Timezone(ctx)
-	if err != nil {
-		log.Warn().Err(err).Msg("reschedule: failed to load timezone")
-		return nil
-	}
-	activeStartStr, err := prefs.ActiveHoursStart(ctx)
-	if err != nil {
-		log.Warn().Err(err).Msg("reschedule: failed to load active_hours_start")
-		return nil
-	}
-	activeEndStr, err := prefs.ActiveHoursEnd(ctx)
-	if err != nil {
-		log.Warn().Err(err).Msg("reschedule: failed to load active_hours_end")
-		return nil
-	}
-
-	// Load energy profile for scoring (best-effort, default empty).
-	energyProfile := make(map[string]string)
-	if epStr, err := prefs.Get(ctx, "energy_profile"); err == nil && epStr != "" {
-		_ = json.Unmarshal([]byte(epStr), &energyProfile)
-	}
-
-	// Compute week boundaries.
-	weekStart := skipped.WeekStart
-	weekEnd := weekStart.AddDate(0, 0, 7)
-
-	// Load blocking events, protected blocks, and existing instances for the week.
-	events, err := q.ListBlockingEventsInRange(ctx, sqlcdb.ListBlockingEventsInRangeParams{
-		RangeStart: weekStart,
-		RangeEnd:   weekEnd,
-	})
-	if err != nil {
-		log.Warn().Err(err).Msg("reschedule: failed to load events")
-		return nil
-	}
-
-	protectedBlocks, err := q.ListActiveProtectedBlocks(ctx)
-	if err != nil {
-		log.Warn().Err(err).Msg("reschedule: failed to load protected blocks")
-		return nil
-	}
-
-	existingInstances, err := q.ListScheduledGoalInstancesInRange(ctx, sqlcdb.ListScheduledGoalInstancesInRangeParams{
-		RangeStart: weekStart,
-		RangeEnd:   weekEnd,
-	})
-	if err != nil {
-		log.Warn().Err(err).Msg("reschedule: failed to load goal instances")
-		return nil
-	}
-
-	// Convert events to gap types.
-	blockingEvents := gap.ConvertBlockingEvents(events)
-
-	// Expand protected blocks for all remaining days.
-	var allProtected []gap.ProtectedBlock
-	for dayOffset := 0; dayOffset < 7; dayOffset++ {
-		day := weekStart.AddDate(0, 0, dayOffset)
-		allProtected = append(allProtected, gap.ExpandProtectedBlocksForDate(protectedBlocks, day, userTZ)...)
-	}
-
-	// Build gap input for the scheduler.
-	schedInput := goal.ScheduleInput{
-		Goals:             []sqlcdb.RecurringGoal{g},
-		ExistingInstances: existingInstances,
-		BlockingEvents:    blockingEvents,
-		ProtectedBlocks:   allProtected,
-		WeekStart:         weekStart,
-		ActiveStartStr:    activeStartStr,
-		ActiveEndStr:      activeEndStr,
-		UserTimezone:      userTZ,
-		EnergyProfile:     energyProfile,
-	}
-
-	// Build week gaps using the same mechanism as the scheduler.
-	gaps, err := goal.BuildWeekGaps(schedInput)
-	if err != nil {
-		log.Warn().Err(err).Msg("reschedule: failed to compute week gaps")
-		return nil
-	}
-
-	// Find next slot after the skipped instance's end time.
-	placement := goal.FindNextSlot(g, skipped.ScheduledEnd, weekEnd, gaps, existingInstances, energyProfile, userTZ)
-	if placement == nil {
-		log.Info().Int64("goal_id", g.ID).Msg("reschedule: no available slot found")
-		return nil
-	}
-
-	// Create the new instance.
-	newInstance, err := q.CreateGoalInstance(ctx, sqlcdb.CreateGoalInstanceParams{
-		GoalID:         g.ID,
-		WeekStart:      weekStart,
-		ScheduledStart: placement.ScheduledStart,
-		ScheduledEnd:   placement.ScheduledEnd,
-	})
-	if err != nil {
-		log.Warn().Err(err).Msg("reschedule: failed to create new instance")
-		return nil
-	}
-
-	log.Info().
-		Int64("goal_id", g.ID).
-		Time("new_start", placement.ScheduledStart).
-		Time("new_end", placement.ScheduledEnd).
-		Msg("reschedule: new instance created")
-
-	// Optionally push to Nylas (best-effort).
-	if nylasClient != nil {
-		pushGoalInstanceToNylas(ctx, q, nylasClient, prefs, newInstance, g.Label, log)
-	}
-
-	return &newInstance
-}
-
-// pushGoalInstanceToNylas creates a Nylas calendar event for a goal instance
-// and writes back the nylas_event_id. Failures are logged but not propagated.
-func pushGoalInstanceToNylas(
-	ctx context.Context,
-	q *sqlcdb.Queries,
-	nylasClient NylasEventCreator,
-	prefs *preferences.Store,
-	instance sqlcdb.GoalInstance,
-	label string,
-	log zerolog.Logger,
-) {
-	grantID, _ := prefs.Get(ctx, "nylas_grant_id")
-	calendarID, _ := prefs.Get(ctx, "nylas_calendar_id")
-	if grantID == "" || calendarID == "" {
-		return
-	}
-
-	evt, err := nylasClient.CreateEvent(ctx, grantID, calendarID, nylas.CreateEventRequest{
-		Title: label,
-		When: nylas.EventWhen{
-			Object:    "timespan",
-			StartTime: instance.ScheduledStart.Unix(),
-			EndTime:   instance.ScheduledEnd.Unix(),
-		},
-		Busy: true,
-	})
-	if err != nil {
-		log.Warn().Err(err).Int64("instance_id", instance.ID).Msg("failed to push goal instance to Nylas")
-		return
-	}
-
-	if _, err := q.UpdateGoalInstanceNylasEventID(ctx, sqlcdb.UpdateGoalInstanceNylasEventIDParams{
-		NylasEventID: sql.NullString{String: evt.ID, Valid: true},
-		ID:           instance.ID,
-	}); err != nil {
-		log.Warn().Err(err).Int64("instance_id", instance.ID).Msg("failed to update nylas_event_id")
 	}
 }
 
@@ -770,36 +571,17 @@ func CompleteGoalInstance(q *sqlcdb.Queries, log zerolog.Logger) http.HandlerFun
 			return
 		}
 
-		ctx := r.Context()
-
-		instance, err := q.GetGoalInstance(ctx, instanceID)
+		updated, err := action.CompleteGoalInstance(r.Context(), q, goalID, instanceID, log)
 		if err != nil {
-			if errors.Is(err, sql.ErrNoRows) {
+			switch {
+			case errors.Is(err, action.ErrNotFound):
 				RespondError(w, http.StatusNotFound, "not_found", "goal instance not found", log)
-				return
+			case errors.Is(err, action.ErrInvalidStatus):
+				RespondError(w, http.StatusBadRequest, "bad_request", "only scheduled instances can be completed", log)
+			default:
+				log.Error().Err(err).Int64("instance_id", instanceID).Msg("failed to complete goal instance")
+				RespondError(w, http.StatusInternalServerError, "internal_error", "failed to complete goal instance", log)
 			}
-			log.Error().Err(err).Int64("instance_id", instanceID).Msg("failed to get goal instance")
-			RespondError(w, http.StatusInternalServerError, "internal_error", "failed to get goal instance", log)
-			return
-		}
-
-		if instance.GoalID != goalID {
-			RespondError(w, http.StatusNotFound, "not_found", "goal instance not found", log)
-			return
-		}
-
-		if instance.Status != "scheduled" {
-			RespondError(w, http.StatusBadRequest, "bad_request", "only scheduled instances can be completed", log)
-			return
-		}
-
-		updated, err := q.UpdateGoalInstanceStatus(ctx, sqlcdb.UpdateGoalInstanceStatusParams{
-			Status: "completed",
-			ID:     instanceID,
-		})
-		if err != nil {
-			log.Error().Err(err).Int64("instance_id", instanceID).Msg("failed to complete goal instance")
-			RespondError(w, http.StatusInternalServerError, "internal_error", "failed to complete goal instance", log)
 			return
 		}
 

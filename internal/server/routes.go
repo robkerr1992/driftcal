@@ -10,6 +10,7 @@ import (
 
 	"github.com/robkerr1992/driftcal/internal/handler"
 	authmw "github.com/robkerr1992/driftcal/internal/middleware"
+	"github.com/robkerr1992/driftcal/internal/telegram"
 )
 
 // routes builds the chi router with middleware and all route registrations.
@@ -31,6 +32,9 @@ func (s *Server) routes() http.Handler {
 	r.Get("/api/accounts/callback", handler.AccountCallback(s.nylas, s.cfg.BaseURL, s.queries, s.log))
 	if s.cfg.NylasWebhookSecret != "" {
 		r.Post("/api/webhooks/nylas", handler.NylasWebhook(s.cfg.NylasWebhookSecret, s.nylas, s.queries, s.log))
+	}
+	if s.telegramBot != nil {
+		r.Post("/api/webhooks/telegram", telegram.WebhookHandler(s.telegramBot))
 	}
 
 	// Authenticated API routes (Bearer token)
