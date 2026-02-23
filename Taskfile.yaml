@@ -53,6 +53,25 @@ tasks:
       - rm -f {{.BINARY}}
       - rm -f driftcal.db driftcal.db-wal driftcal.db-shm
 
+  build-linux:
+    desc: Cross-compile for Linux amd64
+    env:
+      GOOS: linux
+      GOARCH: amd64
+      CGO_ENABLED: "0"
+    cmds:
+      - go build -o {{.BINARY}}-linux-amd64 ./cmd/driftcal
+
+  deploy:
+    desc: Deploy to VPS (requires REMOTE=user@host)
+    deps: [build-linux]
+    preconditions:
+      - sh: '[ -n "{{.REMOTE}}" ]'
+        msg: "REMOTE is required (e.g., task deploy REMOTE=user@host)"
+    cmds:
+      - scp {{.BINARY}}-linux-amd64 deploy/driftcal.service {{.REMOTE}}:/tmp/
+      - ssh {{.REMOTE}} 'sudo mv /tmp/{{.BINARY}}-linux-amd64 /opt/driftcal/{{.BINARY}} && sudo mv /tmp/driftcal.service /etc/systemd/system/ && sudo systemctl daemon-reload && sudo systemctl restart driftcal'
+
   check:
     desc: Run fmt, lint, and test
     cmds:

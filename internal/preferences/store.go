@@ -40,6 +40,11 @@ func (s *Store) Timezone(ctx context.Context) (*time.Location, error) {
 	return loc, nil
 }
 
+// DigestTime returns the morning digest time (HH:MM), defaulting to "07:30".
+func (s *Store) DigestTime(ctx context.Context) (string, error) {
+	return s.getOrDefault(ctx, "digest_time", "07:30")
+}
+
 // ActiveHoursStart returns the active hours start time (HH:MM), defaulting to "07:00".
 func (s *Store) ActiveHoursStart(ctx context.Context) (string, error) {
 	return s.getOrDefault(ctx, "active_hours_start", "07:00")

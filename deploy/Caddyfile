@@ -1,0 +1,14 @@
+{$DRIFTCAL_DOMAIN} {
+	reverse_proxy localhost:{$DRIFTCAL_PORT:8080}
+
+	header {
+		X-Content-Type-Options nosniff
+		X-Frame-Options DENY
+		Referrer-Policy no-referrer
+		-Server
+	}
+
+	log {
+		output file /var/log/caddy/driftcal.log
+	}
+}
