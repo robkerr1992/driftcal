@@ -218,8 +218,8 @@ func (b *Bot) createGoalFromConversation(ctx context.Context, chatID int64, conv
 
 	var allowedDaysJSON sql.NullString
 	if len(allowedDays) > 0 && len(allowedDays) < 7 {
-		b, _ := json.Marshal(allowedDays)
-		allowedDaysJSON = sql.NullString{String: string(b), Valid: true}
+		daysJSON, _ := json.Marshal(allowedDays)
+		allowedDaysJSON = sql.NullString{String: string(daysJSON), Valid: true}
 	}
 
 	created, err := b.queries.CreateGoal(ctx, sqlcdb.CreateGoalParams{

@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -12,6 +13,8 @@ import (
 	"github.com/robkerr1992/driftcal/gen/sqlcdb"
 	"github.com/robkerr1992/driftcal/internal/goal"
 )
+
+var hhmmRegex = regexp.MustCompile(`^([01]\d|2[0-3]):[0-5]\d$`)
 
 func (b *Bot) cmdStart(ctx context.Context, msg *Message) {
 	chatID := msg.Chat.ID
@@ -45,9 +48,10 @@ func (b *Bot) cmdRegenerate(ctx context.Context, msg *Message) {
 
 	// Rate limit: 1 per hour.
 	b.regenMu.Lock()
-	if time.Since(b.lastRegenerate) < time.Hour {
+	elapsed := time.Since(b.lastRegenerate)
+	if elapsed < time.Hour {
 		b.regenMu.Unlock()
-		remaining := time.Hour - time.Since(b.lastRegenerate)
+		remaining := time.Hour - elapsed
 		b.sendText(ctx, chatID, EscapeMD2(fmt.Sprintf(
 			"Rate limited. Try again in %d minutes.", int(remaining.Minutes())+1)))
 		return
@@ -70,7 +74,7 @@ func (b *Bot) cmdRegenerate(ctx context.Context, msg *Message) {
 	var resultText string
 	if pipeErr != nil {
 		b.log.Error().Err(pipeErr).Msg("pipeline failed during /regenerate")
-		resultText = EscapeMD2(fmt.Sprintf("Pipeline failed: %s", pipeErr.Error()))
+		resultText = EscapeMD2("Pipeline failed. Check server logs for details.")
 	} else {
 		resultText = EscapeMD2("Pipeline completed! Use /tomorrow to see results.")
 	}
@@ -185,6 +189,15 @@ func (b *Bot) cmdBlock(ctx context.Context, msg *Message, args string) {
 	startTime := times[0]
 	endTime := times[1]
 
+	if !hhmmRegex.MatchString(startTime) || !hhmmRegex.MatchString(endTime) {
+		b.sendText(ctx, chatID, EscapeMD2("Times must be HH:MM format (e.g. 09:00-17:00)."))
+		return
+	}
+	if endTime <= startTime {
+		b.sendText(ctx, chatID, EscapeMD2("End time must be after start time."))
+		return
+	}
+
 	var dow sql.NullInt64
 	if len(parts) >= 3 {
 		day, err := strconv.ParseInt(parts[2], 10, 64)
@@ -247,8 +260,7 @@ func (b *Bot) cmdStatus(ctx context.Context, msg *Message) {
 		runPtr = &run
 	}
 
-	// Uptime is approximate — based on bot creation time.
-	uptime := time.Since(time.Now()) // placeholder; wired to server startTime later
+	uptime := time.Since(b.startTime)
 	text := FormatStatus(runPtr, uptime)
 	b.sendText(ctx, chatID, text)
 }

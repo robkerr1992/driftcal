@@ -20,6 +20,8 @@ type PipelineRunner interface {
 }
 
 // Bot handles Telegram bot interactions.
+// Note: conversation state is single-user only — only one active conversation
+// can exist at a time across the entire bot.
 type Bot struct {
 	client         *Client
 	authorizedUser int64
@@ -29,6 +31,7 @@ type Bot struct {
 	nylasClient    action.NylasEventCreator
 	pipeline       PipelineRunner
 	log            zerolog.Logger
+	startTime      time.Time
 	cmdLimiter     *rate.Limiter
 	lastRegenerate time.Time
 	regenMu        sync.Mutex
@@ -56,13 +59,20 @@ func NewBot(
 		nylasClient:    nylasClient,
 		pipeline:       pipeline,
 		log:            log.With().Str("component", "telegram_bot").Logger(),
+		startTime:      time.Now(),
 		cmdLimiter:     rate.NewLimiter(rate.Every(6*time.Second), 10), // 10/min
 	}
 }
 
+// RegisterWebhook registers the webhook URL with Telegram.
+func (b *Bot) RegisterWebhook(ctx context.Context, url, secret string) error {
+	return b.client.SetWebhook(ctx, url, secret)
+}
+
 // handleUpdate dispatches an incoming update to the appropriate handler.
-func (b *Bot) handleUpdate(parentCtx context.Context, u Update) {
-	// Use a fresh context with timeout for async handling.
+func (b *Bot) handleUpdate(u Update) {
+	// Use a fresh context with timeout — the webhook request context is already
+	// cancelled by the time this goroutine runs.
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 

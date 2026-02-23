@@ -79,9 +79,9 @@ func New(cfg *config.Config, db *sql.DB, log zerolog.Logger) *Server {
 	// Initialize Telegram bot if configured.
 	if cfg.TelegramBotToken != "" && cfg.TelegramAuthorizedUser != 0 {
 		tgClient := telegram.New(cfg.TelegramBotToken)
-		var nylasCreator telegram.PipelineRunner
+		var pipelineRunner telegram.PipelineRunner
 		if s.pipeline != nil {
-			nylasCreator = s.pipeline
+			pipelineRunner = s.pipeline
 		}
 		var nylasEvt action.NylasEventCreator
 		if s.nylas != nil {
@@ -94,7 +94,7 @@ func New(cfg *config.Config, db *sql.DB, log zerolog.Logger) *Server {
 			q,
 			s.prefs,
 			nylasEvt,
-			nylasCreator,
+			pipelineRunner,
 			log,
 		)
 	}
@@ -131,8 +131,7 @@ func (s *Server) Run() error {
 	// Register Telegram webhook (non-fatal on error).
 	if s.telegramBot != nil && s.cfg.BaseURL != "" {
 		webhookURL := s.cfg.BaseURL + "/api/webhooks/telegram"
-		tgClient := telegram.New(s.cfg.TelegramBotToken)
-		if err := tgClient.SetWebhook(context.Background(), webhookURL, s.cfg.TelegramWebhookSecret); err != nil {
+		if err := s.telegramBot.RegisterWebhook(context.Background(), webhookURL, s.cfg.TelegramWebhookSecret); err != nil {
 			s.log.Warn().Err(err).Msg("failed to register Telegram webhook (non-fatal)")
 		} else {
 			s.log.Info().Str("url", webhookURL).Msg("Telegram webhook registered")

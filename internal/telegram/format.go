@@ -2,6 +2,7 @@ package telegram
 
 import (
 	"fmt"
+	"sort"
 	"strings"
 	"time"
 
@@ -11,30 +12,33 @@ import (
 // maxMessageLen is the safe limit for a single Telegram message (under the 4096 hard limit).
 const maxMessageLen = 3800
 
+// md2Replacer escapes all 18 MarkdownV2 special characters.
+// Allocated once at package init; safe for concurrent use.
+var md2Replacer = strings.NewReplacer(
+	`\`, `\\`,
+	`_`, `\_`,
+	`*`, `\*`,
+	`[`, `\[`,
+	`]`, `\]`,
+	`(`, `\(`,
+	`)`, `\)`,
+	`~`, `\~`,
+	"`", "\\`",
+	`>`, `\>`,
+	`#`, `\#`,
+	`+`, `\+`,
+	`-`, `\-`,
+	`=`, `\=`,
+	`|`, `\|`,
+	`{`, `\{`,
+	`}`, `\}`,
+	`.`, `\.`,
+	`!`, `\!`,
+)
+
 // EscapeMD2 escapes all 18 MarkdownV2 special characters.
 func EscapeMD2(s string) string {
-	replacer := strings.NewReplacer(
-		`\`, `\\`,
-		`_`, `\_`,
-		`*`, `\*`,
-		`[`, `\[`,
-		`]`, `\]`,
-		`(`, `\(`,
-		`)`, `\)`,
-		`~`, `\~`,
-		"`", "\\`",
-		`>`, `\>`,
-		`#`, `\#`,
-		`+`, `\+`,
-		`-`, `\-`,
-		`=`, `\=`,
-		`|`, `\|`,
-		`{`, `\{`,
-		`}`, `\}`,
-		`.`, `\.`,
-		`!`, `\!`,
-	)
-	return replacer.Replace(s)
+	return md2Replacer.Replace(s)
 }
 
 // FormatDailyDigest builds the digest header and section labels.
@@ -188,16 +192,23 @@ func FormatGapsList(gaps []sqlcdb.DailyGap, tz *time.Location) string {
 }
 
 // FormatPreferences formats all preferences as a key-value display.
+// Keys are sorted for deterministic output.
 func FormatPreferences(prefs map[string]string) string {
 	if len(prefs) == 0 {
 		return EscapeMD2("No preferences set.")
 	}
 
+	keys := make([]string, 0, len(prefs))
+	for k := range prefs {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+
 	var b strings.Builder
 	b.WriteString("*Preferences*\n\n")
 
-	for k, v := range prefs {
-		b.WriteString(fmt.Sprintf("*%s:* %s\n", EscapeMD2(k), EscapeMD2(v)))
+	for _, k := range keys {
+		b.WriteString(fmt.Sprintf("*%s:* %s\n", EscapeMD2(k), EscapeMD2(prefs[k])))
 	}
 
 	return b.String()

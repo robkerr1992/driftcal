@@ -73,7 +73,10 @@ func WebhookHandler(bot *Bot) http.HandlerFunc {
 		}
 
 		// Handle update asynchronously to not block the webhook response.
-		go bot.handleUpdate(r.Context(), update)
+		// We intentionally use context.Background() (inside handleUpdate) rather
+		// than r.Context(), because the request context is cancelled when this
+		// handler returns 200.
+		go bot.handleUpdate(update)
 
 		w.WriteHeader(http.StatusOK)
 	}

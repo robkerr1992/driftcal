@@ -187,7 +187,7 @@ func (c *Client) call(ctx context.Context, method string, payload any, dest any)
 	}
 	defer resp.Body.Close()
 
-	respBody, err := io.ReadAll(resp.Body)
+	respBody, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20)) // 1 MB cap
 	if err != nil {
 		return fmt.Errorf("reading response: %w", err)
 	}
