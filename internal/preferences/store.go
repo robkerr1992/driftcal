@@ -176,6 +176,73 @@ func (s *Store) FormatForAPI(ctx context.Context) (map[string]any, error) {
 	}, nil
 }
 
+// Latitude returns the user's latitude, or 0 if unset.
+func (s *Store) Latitude(ctx context.Context) (float64, error) {
+	return s.getFloat(ctx, "latitude", 0)
+}
+
+// Longitude returns the user's longitude, or 0 if unset.
+func (s *Store) Longitude(ctx context.Context) (float64, error) {
+	return s.getFloat(ctx, "longitude", 0)
+}
+
+// City returns the user's city, or empty string if unset.
+func (s *Store) City(ctx context.Context) (string, error) {
+	return s.getOrDefault(ctx, "city", "")
+}
+
+// State returns the user's state, or empty string if unset.
+func (s *Store) State(ctx context.Context) (string, error) {
+	return s.getOrDefault(ctx, "state", "")
+}
+
+// EnergyProfile returns the parsed energy profile map, defaulting to standard values.
+func (s *Store) EnergyProfile(ctx context.Context) (map[string]string, error) {
+	val, err := s.getOrDefault(ctx, "energy_profile", "")
+	if err != nil {
+		return nil, err
+	}
+	if val == "" {
+		return map[string]string{"morning": "high", "afternoon": "medium", "evening": "low"}, nil
+	}
+	var profile map[string]string
+	if err := json.Unmarshal([]byte(val), &profile); err != nil {
+		return map[string]string{"morning": "high", "afternoon": "medium", "evening": "low"}, nil
+	}
+	return profile, nil
+}
+
+// Interests returns the parsed interests list, or nil if unset.
+func (s *Store) Interests(ctx context.Context) ([]string, error) {
+	val, err := s.getOrDefault(ctx, "interests", "")
+	if err != nil {
+		return nil, err
+	}
+	if val == "" {
+		return nil, nil
+	}
+	var interests []string
+	if err := json.Unmarshal([]byte(val), &interests); err != nil {
+		return nil, nil
+	}
+	return interests, nil
+}
+
+func (s *Store) getFloat(ctx context.Context, key string, def float64) (float64, error) {
+	val, err := s.getOrDefault(ctx, key, "")
+	if err != nil {
+		return 0, err
+	}
+	if val == "" {
+		return def, nil
+	}
+	f, err := strconv.ParseFloat(val, 64)
+	if err != nil {
+		return def, nil
+	}
+	return f, nil
+}
+
 func (s *Store) getOrDefault(ctx context.Context, key, def string) (string, error) {
 	pref, err := s.queries.GetPreference(ctx, key)
 	if err != nil {
