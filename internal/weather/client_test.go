@@ -5,14 +5,22 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 )
 
-func tomorrowEntries() openWeatherResponse {
-	now := time.Now().UTC()
-	tomorrowNoon := time.Date(now.Year(), now.Month(), now.Day()+1, 12, 0, 0, 0, time.UTC)
-	tomorrowEvening := time.Date(now.Year(), now.Month(), now.Day()+1, 18, 0, 0, 0, time.UTC)
+// fixedReference is a stable reference time for unit tests, avoiding midnight
+// flakes when time.Now() crosses day boundaries.
+var fixedReference = time.Date(2026, 3, 1, 14, 0, 0, 0, time.UTC)
+
+// tomorrowEntriesRelative builds forecast entries for "tomorrow" relative to
+// the given reference time. This allows both FetchForecast (which uses
+// time.Now() internally) and parseForecast tests (which use fixedReference)
+// to share the same data shape.
+func tomorrowEntriesRelative(ref time.Time) openWeatherResponse {
+	tomorrowNoon := time.Date(ref.Year(), ref.Month(), ref.Day()+1, 12, 0, 0, 0, time.UTC)
+	tomorrowEvening := time.Date(ref.Year(), ref.Month(), ref.Day()+1, 18, 0, 0, 0, time.UTC)
 
 	return openWeatherResponse{
 		List: []forecastEntry{
@@ -50,7 +58,8 @@ func tomorrowEntries() openWeatherResponse {
 }
 
 func TestFetchForecast_Success(t *testing.T) {
-	resp := tomorrowEntries()
+	// FetchForecast uses time.Now() internally, so test data must be relative to now.
+	resp := tomorrowEntriesRelative(time.Now().UTC())
 
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/data/2.5/forecast" {
@@ -100,16 +109,27 @@ func TestFetchForecast_APIError(t *testing.T) {
 	defer srv.Close()
 
 	c := NewWithBaseURL("bad-key", srv.URL)
-	forecast, err := c.FetchForecast(context.Background(), 38.9, -77.0)
-	if err != nil {
-		t.Fatalf("expected nil error for API failure (graceful degradation), got: %v", err)
+	_, err := c.FetchForecast(context.Background(), 38.9, -77.0)
+	if err == nil {
+		t.Fatal("expected error for API failure")
 	}
-	// Zero forecast.
-	if forecast.Conditions != "" {
-		t.Errorf("Conditions = %q, want empty (zero forecast)", forecast.Conditions)
+	if !strings.Contains(err.Error(), "401") {
+		t.Errorf("error should mention status code, got: %v", err)
 	}
-	if forecast.TempHighF != 0 {
-		t.Errorf("TempHighF = %f, want 0", forecast.TempHighF)
+}
+
+func TestFetchForecast_NetworkError(t *testing.T) {
+	// Use a closed server to simulate connection refused.
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))
+	srv.Close()
+
+	c := NewWithBaseURL("test-key", srv.URL)
+	_, err := c.FetchForecast(context.Background(), 38.9, -77.0)
+	if err == nil {
+		t.Fatal("expected error for network failure")
+	}
+	if !strings.Contains(err.Error(), "fetching weather") {
+		t.Errorf("error should wrap with context, got: %v", err)
 	}
 }
 
@@ -127,11 +147,39 @@ func TestFetchForecast_MalformedJSON(t *testing.T) {
 	defer srv.Close()
 
 	c := NewWithBaseURL("test-key", srv.URL)
-	forecast, err := c.FetchForecast(context.Background(), 38.9, -77.0)
+	_, err := c.FetchForecast(context.Background(), 38.9, -77.0)
+	if err == nil {
+		t.Fatal("expected error for malformed JSON")
+	}
+	if !strings.Contains(err.Error(), "parsing weather JSON") {
+		t.Errorf("error should mention parsing, got: %v", err)
+	}
+}
+
+func TestParseForecast_EmptyList(t *testing.T) {
+	resp := openWeatherResponse{List: []forecastEntry{}}
+	data, _ := json.Marshal(resp)
+	forecast, err := parseForecast(data, fixedReference)
 	if err != nil {
-		t.Fatalf("expected nil error for malformed JSON, got: %v", err)
+		t.Fatalf("unexpected error: %v", err)
 	}
 	if forecast.Conditions != "" {
-		t.Error("expected zero forecast for malformed JSON")
+		t.Errorf("Conditions = %q, want empty", forecast.Conditions)
+	}
+}
+
+func TestParseForecast_FixedReference(t *testing.T) {
+	resp := tomorrowEntriesRelative(fixedReference)
+	data, _ := json.Marshal(resp)
+
+	forecast, err := parseForecast(data, fixedReference)
+	if err != nil {
+		t.Fatalf("parseForecast failed: %v", err)
+	}
+	if forecast.Conditions != "Clouds" {
+		t.Errorf("Conditions = %q, want Clouds", forecast.Conditions)
+	}
+	if forecast.TempHighF != 62.8 {
+		t.Errorf("TempHighF = %f, want 62.8", forecast.TempHighF)
 	}
 }

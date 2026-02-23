@@ -52,33 +52,39 @@ func NewWithBaseURL(apiKey, baseURL string) *Client {
 }
 
 // FetchForecast retrieves tomorrow's weather forecast for the given coordinates.
-// On API errors, returns a zero Forecast and nil error (graceful degradation).
+// Errors are returned to the caller — the pipeline treats weather as soft-fail.
 func (c *Client) FetchForecast(ctx context.Context, lat, lon float64) (Forecast, error) {
-	url := fmt.Sprintf("%s/data/2.5/forecast?lat=%f&lon=%f&appid=%s&units=imperial",
-		c.baseURL, lat, lon, c.apiKey)
+	reqURL := fmt.Sprintf("%s/data/2.5/forecast?lat=%f&lon=%f&units=imperial",
+		c.baseURL, lat, lon)
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, reqURL, nil)
 	if err != nil {
-		return Forecast{}, nil // graceful degradation
+		return Forecast{}, fmt.Errorf("creating weather request: %w", err)
 	}
+
+	// Add API key via query params rather than embedding in the URL string,
+	// so it won't leak in error messages from http.Client.
+	q := req.URL.Query()
+	q.Set("appid", c.apiKey)
+	req.URL.RawQuery = q.Encode()
 
 	resp, err := c.http.Do(req)
 	if err != nil {
-		return Forecast{}, nil
+		return Forecast{}, fmt.Errorf("fetching weather: %w", err)
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		io.Copy(io.Discard, resp.Body)
-		return Forecast{}, nil
+		return Forecast{}, fmt.Errorf("weather API returned status %d", resp.StatusCode)
 	}
 
 	body, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20)) // 1MB limit
 	if err != nil {
-		return Forecast{}, nil
+		return Forecast{}, fmt.Errorf("reading weather response: %w", err)
 	}
 
-	return parseForecast(body)
+	return parseForecast(body, time.Now().UTC())
 }
 
 // openWeatherResponse models the relevant parts of the 5-day/3-hour forecast API.
@@ -102,19 +108,18 @@ type forecastEntry struct {
 	Pop float64 `json:"pop"` // probability of precipitation 0-1
 }
 
-func parseForecast(data []byte) (Forecast, error) {
+func parseForecast(data []byte, referenceTime time.Time) (Forecast, error) {
 	var resp openWeatherResponse
 	if err := json.Unmarshal(data, &resp); err != nil {
-		return Forecast{}, nil // graceful degradation
+		return Forecast{}, fmt.Errorf("parsing weather JSON: %w", err)
 	}
 
 	if len(resp.List) == 0 {
 		return Forecast{}, nil
 	}
 
-	// Find tomorrow's entries.
-	now := time.Now().UTC()
-	tomorrowStart := time.Date(now.Year(), now.Month(), now.Day()+1, 0, 0, 0, 0, time.UTC)
+	// Find tomorrow's entries relative to the reference time.
+	tomorrowStart := time.Date(referenceTime.Year(), referenceTime.Month(), referenceTime.Day()+1, 0, 0, 0, 0, time.UTC)
 	tomorrowEnd := tomorrowStart.AddDate(0, 0, 1)
 
 	var (

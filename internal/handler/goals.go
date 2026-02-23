@@ -661,37 +661,13 @@ func tryReschedule(
 	}
 
 	// Convert events to gap types.
-	var blockingEvents []gap.BlockingEvent
-	for _, ev := range events {
-		title := ""
-		if ev.Title.Valid {
-			title = ev.Title.String
-		}
-		blockingEvents = append(blockingEvents, gap.BlockingEvent{
-			StartTime: ev.StartTime,
-			EndTime:   ev.EndTime,
-			AllDay:    ev.AllDay,
-			Busy:      ev.Busy,
-			Title:     title,
-		})
-	}
+	blockingEvents := gap.ConvertBlockingEvents(events)
 
 	// Expand protected blocks for all remaining days.
 	var allProtected []gap.ProtectedBlock
 	for dayOffset := 0; dayOffset < 7; dayOffset++ {
 		day := weekStart.AddDate(0, 0, dayOffset)
-		dayLocal := day.In(userTZ)
-		dow := int64(dayLocal.Weekday())
-		for _, pb := range protectedBlocks {
-			if pb.DayOfWeek.Valid && pb.DayOfWeek.Int64 != dow {
-				continue
-			}
-			expanded, err := gap.ExpandProtectedBlock(pb, day, userTZ)
-			if err != nil {
-				continue
-			}
-			allProtected = append(allProtected, expanded)
-		}
+		allProtected = append(allProtected, gap.ExpandProtectedBlocksForDate(protectedBlocks, day, userTZ)...)
 	}
 
 	// Build gap input for the scheduler.

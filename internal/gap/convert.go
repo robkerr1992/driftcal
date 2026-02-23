@@ -7,6 +7,62 @@ import (
 	"github.com/robkerr1992/driftcal/gen/sqlcdb"
 )
 
+// ConvertBlockingEvents converts sqlcdb Event rows to gap BlockingEvents.
+func ConvertBlockingEvents(events []sqlcdb.Event) []BlockingEvent {
+	if len(events) == 0 {
+		return nil
+	}
+	result := make([]BlockingEvent, 0, len(events))
+	for _, ev := range events {
+		title := ""
+		if ev.Title.Valid {
+			title = ev.Title.String
+		}
+		result = append(result, BlockingEvent{
+			StartTime: ev.StartTime,
+			EndTime:   ev.EndTime,
+			AllDay:    ev.AllDay,
+			Busy:      ev.Busy,
+			Title:     title,
+		})
+	}
+	return result
+}
+
+// ExpandProtectedBlocksForDate filters protected blocks for the given day's
+// weekday and expands them to UTC intervals.
+func ExpandProtectedBlocksForDate(blocks []sqlcdb.ProtectedBlock, day time.Time, loc *time.Location) []ProtectedBlock {
+	dow := int64(day.In(loc).Weekday())
+	var result []ProtectedBlock
+	for _, pb := range blocks {
+		if pb.DayOfWeek.Valid && pb.DayOfWeek.Int64 != dow {
+			continue
+		}
+		expanded, err := ExpandProtectedBlock(pb, day, loc)
+		if err != nil {
+			continue
+		}
+		result = append(result, expanded)
+	}
+	return result
+}
+
+// ConvertGoalInstances converts sqlcdb goal instance rows to gap GoalInstances.
+func ConvertGoalInstances(instances []sqlcdb.ListScheduledGoalInstancesInRangeWithLabelRow) []GoalInstance {
+	if len(instances) == 0 {
+		return nil
+	}
+	result := make([]GoalInstance, 0, len(instances))
+	for _, gi := range instances {
+		result = append(result, GoalInstance{
+			StartTime: gi.ScheduledStart,
+			EndTime:   gi.ScheduledEnd,
+			Label:     gi.GoalLabel,
+		})
+	}
+	return result
+}
+
 // ExpandProtectedBlock converts a DB protected block (HH:MM times in user
 // timezone) to a UTC interval for a specific date. This handles DST correctly
 // by constructing the wall-clock time in the user's location before converting

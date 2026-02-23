@@ -22,14 +22,6 @@ func toolUseResponse(suggestions []Suggestion) messagesResponse {
 	}
 }
 
-func textOnlyResponse() messagesResponse {
-	return messagesResponse{
-		Content: []contentBlock{
-			{Type: "text"},
-		},
-	}
-}
-
 func TestGenerate_Success(t *testing.T) {
 	suggestions := []Suggestion{
 		{
@@ -56,12 +48,24 @@ func TestGenerate_Success(t *testing.T) {
 		}
 
 		var reqBody messagesRequest
-		json.NewDecoder(r.Body).Decode(&reqBody)
+		if err := json.NewDecoder(r.Body).Decode(&reqBody); err != nil {
+			t.Fatalf("decoding request body: %v", err)
+		}
 		if reqBody.Model != defaultModel {
 			t.Errorf("model = %q, want %q", reqBody.Model, defaultModel)
 		}
 		if len(reqBody.Tools) != 1 {
 			t.Errorf("tools count = %d, want 1", len(reqBody.Tools))
+		}
+		// Verify tool_choice forces tool use.
+		if reqBody.ToolChoice == nil {
+			t.Fatal("tool_choice should be set")
+		}
+		if reqBody.ToolChoice.Type != "tool" {
+			t.Errorf("tool_choice.type = %q, want tool", reqBody.ToolChoice.Type)
+		}
+		if reqBody.ToolChoice.Name != "suggest_activities" {
+			t.Errorf("tool_choice.name = %q, want suggest_activities", reqBody.ToolChoice.Name)
 		}
 
 		w.Header().Set("x-request-id", "req-123")
@@ -89,51 +93,6 @@ func TestGenerate_Success(t *testing.T) {
 	}
 }
 
-func TestGenerate_RetryOnNoToolUse(t *testing.T) {
-	callCount := 0
-	suggestions := []Suggestion{
-		{GapNumber: 1, Title: "Retry success", Description: "d", Category: "outdoor",
-			EnergyLevel: "low", EstimatedCost: "free", Location: "here", Reasoning: "r"},
-	}
-
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		callCount++
-		var reqBody messagesRequest
-		json.NewDecoder(r.Body).Decode(&reqBody)
-
-		if callCount == 1 {
-			// First call: return text-only (no tool_use).
-			if reqBody.Temperature != 0.9 {
-				t.Errorf("first call temperature = %f, want 0.9", reqBody.Temperature)
-			}
-			json.NewEncoder(w).Encode(textOnlyResponse())
-		} else {
-			// Retry: should use lower temperature.
-			if reqBody.Temperature != 0.5 {
-				t.Errorf("retry temperature = %f, want 0.5", reqBody.Temperature)
-			}
-			json.NewEncoder(w).Encode(toolUseResponse(suggestions))
-		}
-	}))
-	defer srv.Close()
-
-	c := NewWithBaseURL("test-key", srv.URL)
-	result, err := c.Generate(context.Background(), "system", "user")
-	if err != nil {
-		t.Fatalf("Generate failed: %v", err)
-	}
-
-	if callCount != 2 {
-		t.Errorf("callCount = %d, want 2 (initial + retry)", callCount)
-	}
-	if len(result.Suggestions) != 1 {
-		t.Fatalf("got %d suggestions after retry, want 1", len(result.Suggestions))
-	}
-	if result.Suggestions[0].Title != "Retry success" {
-		t.Errorf("Title = %q", result.Suggestions[0].Title)
-	}
-}
-
 func TestGenerate_APIError(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusTooManyRequests)
@@ -152,8 +111,28 @@ func TestGenerate_APIError(t *testing.T) {
 }
 
 func TestNew_EmptyKey(t *testing.T) {
-	c := New("")
+	c := New("", "")
 	if c != nil {
-		t.Error("New(\"\") should return nil")
+		t.Error("New(\"\", \"\") should return nil")
+	}
+}
+
+func TestNew_CustomModel(t *testing.T) {
+	c := New("test-key", "claude-haiku-4-5-20251001")
+	if c == nil {
+		t.Fatal("New should return non-nil client")
+	}
+	if c.model != "claude-haiku-4-5-20251001" {
+		t.Errorf("model = %q, want claude-haiku-4-5-20251001", c.model)
+	}
+}
+
+func TestNew_DefaultModel(t *testing.T) {
+	c := New("test-key", "")
+	if c == nil {
+		t.Fatal("New should return non-nil client")
+	}
+	if c.model != defaultModel {
+		t.Errorf("model = %q, want %q", c.model, defaultModel)
 	}
 }

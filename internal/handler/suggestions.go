@@ -85,10 +85,12 @@ func ApproveSuggestion(q *sqlcdb.Queries, nylasClient NylasEventCreator, log zer
 		}
 
 		// Record feedback.
-		q.CreateSuggestionFeedback(ctx, sqlcdb.CreateSuggestionFeedbackParams{
+		if _, err := q.CreateSuggestionFeedback(ctx, sqlcdb.CreateSuggestionFeedbackParams{
 			SuggestionID: id,
 			Action:       "approved",
-		})
+		}); err != nil {
+			log.Error().Err(err).Int64("suggestion_id", id).Msg("failed to create feedback record")
+		}
 
 		// Optionally push to Nylas.
 		if nylasClient != nil {
@@ -144,11 +146,13 @@ func RejectSuggestion(q *sqlcdb.Queries, log zerolog.Logger) http.HandlerFunc {
 		}
 
 		// Record feedback.
-		q.CreateSuggestionFeedback(ctx, sqlcdb.CreateSuggestionFeedbackParams{
+		if _, err := q.CreateSuggestionFeedback(ctx, sqlcdb.CreateSuggestionFeedbackParams{
 			SuggestionID: id,
 			Action:       "rejected",
 			EditNotes:    sql.NullString{String: body.Notes, Valid: body.Notes != ""},
-		})
+		}); err != nil {
+			log.Error().Err(err).Int64("suggestion_id", id).Msg("failed to create feedback record")
+		}
 
 		RespondJSON(w, http.StatusOK, map[string]any{"suggestion": updated}, log)
 	}
@@ -167,7 +171,7 @@ func TriggerPipeline(runner *pipeline.Runner, log zerolog.Logger) http.HandlerFu
 
 		if err := runner.RunDailyPipeline(r.Context(), tomorrow); err != nil {
 			log.Error().Err(err).Msg("pipeline trigger failed")
-			RespondError(w, http.StatusInternalServerError, "internal_error", "pipeline failed: "+err.Error(), log)
+			RespondError(w, http.StatusInternalServerError, "internal_error", "pipeline execution failed", log)
 			return
 		}
 
@@ -202,8 +206,10 @@ func pushSuggestionToNylas(ctx context.Context, q *sqlcdb.Queries, nylasClient N
 		return
 	}
 
-	q.UpdateSuggestionNylasEventID(ctx, sqlcdb.UpdateSuggestionNylasEventIDParams{
+	if err := q.UpdateSuggestionNylasEventID(ctx, sqlcdb.UpdateSuggestionNylasEventIDParams{
 		NylasEventID: sql.NullString{String: evt.ID, Valid: true},
 		ID:           s.ID,
-	})
+	}); err != nil {
+		log.Warn().Err(err).Int64("suggestion_id", s.ID).Msg("failed to store nylas_event_id on suggestion")
+	}
 }

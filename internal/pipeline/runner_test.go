@@ -152,7 +152,10 @@ func TestPipeline_WeatherSoftFail(t *testing.T) {
 		t.Fatalf("RunDailyPipeline should succeed despite weather failure: %v", err)
 	}
 
-	run, _ := q.GetLatestPipelineRun(t.Context())
+	run, err := q.GetLatestPipelineRun(t.Context())
+	if err != nil {
+		t.Fatalf("GetLatestPipelineRun: %v", err)
+	}
 	if run.Status != "completed" {
 		t.Errorf("Status = %q, want completed", run.Status)
 	}
@@ -180,7 +183,10 @@ func TestPipeline_GoalsSoftFail(t *testing.T) {
 		t.Fatalf("RunDailyPipeline should succeed with no goals: %v", err)
 	}
 
-	run, _ := q.GetLatestPipelineRun(t.Context())
+	run, err := q.GetLatestPipelineRun(t.Context())
+	if err != nil {
+		t.Fatalf("GetLatestPipelineRun: %v", err)
+	}
 	if run.Status != "completed" {
 		t.Errorf("Status = %q, want completed", run.Status)
 	}
@@ -204,7 +210,10 @@ func TestPipeline_SuggestionIdempotency(t *testing.T) {
 	}
 
 	// Verify suggestions were created.
-	count, _ := q.CountPendingSuggestionsForDate(t.Context(), tomorrow)
+	count, err := q.CountPendingSuggestionsForDate(t.Context(), tomorrow)
+	if err != nil {
+		t.Fatalf("CountPendingSuggestionsForDate: %v", err)
+	}
 	if count == 0 {
 		t.Fatal("expected suggestions after first run")
 	}
@@ -224,5 +233,58 @@ func TestPipeline_SuggestionIdempotency(t *testing.T) {
 	// Generate should NOT have been called on second run.
 	if ms2.called {
 		t.Error("suggestion Generate should not be called when pending suggestions exist")
+	}
+}
+
+func TestPipeline_SuggestFailure(t *testing.T) {
+	runner, q := setupRunner(t,
+		&mockSyncer{},
+		nil,
+		&mockSuggest{err: errors.New("LLM API error")},
+		nil,
+	)
+
+	tomorrow := time.Now().UTC().AddDate(0, 0, 1)
+	tomorrow = time.Date(tomorrow.Year(), tomorrow.Month(), tomorrow.Day(), 0, 0, 0, 0, time.UTC)
+
+	err := runner.RunDailyPipeline(t.Context(), tomorrow)
+	if err == nil {
+		t.Fatal("expected error from suggest failure")
+	}
+
+	run, err := q.GetLatestPipelineRun(t.Context())
+	if err != nil {
+		t.Fatalf("GetLatestPipelineRun: %v", err)
+	}
+	if run.Status != "failed" {
+		t.Errorf("Status = %q, want failed", run.Status)
+	}
+	if !run.ErrorMessage.Valid || run.ErrorMessage.String == "" {
+		t.Error("ErrorMessage should be set")
+	}
+}
+
+func TestPipeline_NilSuggestClient(t *testing.T) {
+	runner, q := setupRunner(t,
+		&mockSyncer{},
+		nil,
+		nil, // nil suggest client
+		nil,
+	)
+
+	tomorrow := time.Now().UTC().AddDate(0, 0, 1)
+	tomorrow = time.Date(tomorrow.Year(), tomorrow.Month(), tomorrow.Day(), 0, 0, 0, 0, time.UTC)
+
+	err := runner.RunDailyPipeline(t.Context(), tomorrow)
+	if err != nil {
+		t.Fatalf("RunDailyPipeline should succeed with nil suggest client: %v", err)
+	}
+
+	run, err := q.GetLatestPipelineRun(t.Context())
+	if err != nil {
+		t.Fatalf("GetLatestPipelineRun: %v", err)
+	}
+	if run.Status != "completed" {
+		t.Errorf("Status = %q, want completed", run.Status)
 	}
 }

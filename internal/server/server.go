@@ -58,7 +58,7 @@ func New(cfg *config.Config, db *sql.DB, log zerolog.Logger) *Server {
 
 	// Initialize weather and suggestion clients if API keys present.
 	s.weatherClient = weather.New(cfg.OpenWeatherAPIKey)
-	s.suggestClient = suggest.New(cfg.AnthropicAPIKey)
+	s.suggestClient = suggest.New(cfg.AnthropicAPIKey, cfg.AnthropicModel)
 
 	// Initialize pipeline runner if suggestion client is available.
 	if s.suggestClient != nil {

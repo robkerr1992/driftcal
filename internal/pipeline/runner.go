@@ -96,9 +96,17 @@ func (r *Runner) RunDailyPipeline(ctx context.Context, targetDate time.Time) err
 		r.failRun(ctx, run.ID, fmt.Sprintf("loading timezone: %v", err))
 		return fmt.Errorf("loading timezone: %w", err)
 	}
-	activeStart, _ := r.prefs.ActiveHoursStart(ctx)
-	activeEnd, _ := r.prefs.ActiveHoursEnd(ctx)
-	energyProfile, _ := r.prefs.EnergyProfile(ctx)
+	activeStart, err := r.prefs.ActiveHoursStart(ctx)
+	if err != nil {
+		r.failRun(ctx, run.ID, fmt.Sprintf("loading active_hours_start: %v", err))
+		return fmt.Errorf("loading active_hours_start: %w", err)
+	}
+	activeEnd, err := r.prefs.ActiveHoursEnd(ctx)
+	if err != nil {
+		r.failRun(ctx, run.ID, fmt.Sprintf("loading active_hours_end: %v", err))
+		return fmt.Errorf("loading active_hours_end: %w", err)
+	}
+	energyProfile, _ := r.prefs.EnergyProfile(ctx) // OK — truly optional, zero-value is safe
 
 	// Step 2: Compute and store gaps for 3 days (hard-fail).
 	if err := r.stepGaps(ctx, targetDate, run.ID, userTZ, activeStart, activeEnd); err != nil {
@@ -123,7 +131,9 @@ func (r *Runner) RunDailyPipeline(ctx context.Context, targetDate time.Time) err
 	r.completeStep(ctx, run.ID, "suggest")
 
 	// Mark pipeline completed.
-	r.queries.CompletePipelineRun(ctx, run.ID)
+	if err := r.queries.CompletePipelineRun(ctx, run.ID); err != nil {
+		r.log.Error().Err(err).Int64("run_id", run.ID).Msg("pipeline: failed to mark run as completed")
+	}
 	r.log.Info().Int64("run_id", run.ID).Msg("pipeline: completed successfully")
 	return nil
 }
@@ -178,40 +188,14 @@ func (r *Runner) stepGaps(ctx context.Context, targetDate time.Time, runID int64
 		}
 
 		// Convert to gap types.
-		var dayEvents []gap.BlockingEvent
-		for _, ev := range events {
-			title := ""
-			if ev.Title.Valid {
-				title = ev.Title.String
-			}
-			dayEvents = append(dayEvents, gap.BlockingEvent{
-				StartTime: ev.StartTime, EndTime: ev.EndTime,
-				AllDay: ev.AllDay, Busy: ev.Busy, Title: title,
-			})
-		}
+		dayEvents := gap.ConvertBlockingEvents(events)
+		dayProtected := gap.ExpandProtectedBlocksForDate(protectedBlocks, dayLocal.UTC(), loc)
+		dayGoals := gap.ConvertGoalInstances(goalInstances)
 
-		dow := int64(dayLocal.Weekday())
-		var dayProtected []gap.ProtectedBlock
-		for _, pb := range protectedBlocks {
-			if pb.DayOfWeek.Valid && pb.DayOfWeek.Int64 != dow {
-				continue
-			}
-			expanded, err := gap.ExpandProtectedBlock(pb, dayLocal.UTC(), loc)
-			if err != nil {
-				continue
-			}
-			dayProtected = append(dayProtected, expanded)
+		prefMin, err := r.prefs.MinGapMinutes(ctx)
+		if err != nil {
+			r.log.Warn().Err(err).Msg("pipeline: failed to load min_gap_minutes, using 0")
 		}
-
-		var dayGoals []gap.GoalInstance
-		for _, gi := range goalInstances {
-			dayGoals = append(dayGoals, gap.GoalInstance{
-				StartTime: gi.ScheduledStart, EndTime: gi.ScheduledEnd,
-				Label: gi.GoalLabel,
-			})
-		}
-
-		prefMin, _ := r.prefs.MinGapMinutes(ctx)
 		input := gap.Input{
 			Date: dayLocal.UTC(), ActiveStart: rangeStart, ActiveEnd: rangeEnd,
 			MinGapMinutes: prefMin, BlockingEvents: dayEvents,
@@ -222,9 +206,11 @@ func (r *Runner) stepGaps(ctx context.Context, targetDate time.Time, runID int64
 		computed := gap.ComputeGaps(input)
 
 		// Delete existing gaps for this date and insert fresh.
-		r.queries.DeleteDailyGapsForDate(ctx, date)
+		if err := r.queries.DeleteDailyGapsForDate(ctx, date); err != nil {
+			return fmt.Errorf("deleting gaps for %s: %w", date.Format("2006-01-02"), err)
+		}
 		for _, g := range computed {
-			r.queries.CreateDailyGap(ctx, sqlcdb.CreateDailyGapParams{
+			if _, err := r.queries.CreateDailyGap(ctx, sqlcdb.CreateDailyGapParams{
 				GapDate:          date,
 				StartTime:        g.StartTime,
 				EndTime:          g.EndTime,
@@ -234,7 +220,9 @@ func (r *Runner) stepGaps(ctx context.Context, targetDate time.Time, runID int64
 				BeforeEventTitle: toNullString(g.BeforeEventTitle),
 				AfterEventTitle:  toNullString(g.AfterEventTitle),
 				PipelineRunID:    sql.NullInt64{Int64: runID, Valid: true},
-			})
+			}); err != nil {
+				return fmt.Errorf("creating gap for %s: %w", date.Format("2006-01-02"), err)
+			}
 		}
 
 		r.log.Info().Str("date", date.Format("2006-01-02")).Int("gaps", len(computed)).Msg("pipeline: gaps computed")
@@ -298,34 +286,16 @@ func (r *Runner) stepGoals(ctx context.Context, targetDate time.Time, loc *time.
 		return
 	}
 
-	var blockingEvents []gap.BlockingEvent
-	for _, ev := range events {
-		title := ""
-		if ev.Title.Valid {
-			title = ev.Title.String
-		}
-		blockingEvents = append(blockingEvents, gap.BlockingEvent{
-			StartTime: ev.StartTime, EndTime: ev.EndTime,
-			AllDay: ev.AllDay, Busy: ev.Busy, Title: title,
-		})
-	}
+	blockingEvents := gap.ConvertBlockingEvents(events)
 
-	protectedBlocks, _ := r.queries.ListActiveProtectedBlocks(ctx)
+	protectedBlocks, err := r.queries.ListActiveProtectedBlocks(ctx)
+	if err != nil {
+		r.log.Warn().Err(err).Msg("pipeline: failed to load protected blocks for goals (soft-fail)")
+	}
 	var allProtected []gap.ProtectedBlock
 	for dayOffset := 0; dayOffset < 7; dayOffset++ {
 		day := weekStart.AddDate(0, 0, dayOffset)
-		dayLocal := day.In(loc)
-		dow := int64(dayLocal.Weekday())
-		for _, pb := range protectedBlocks {
-			if pb.DayOfWeek.Valid && pb.DayOfWeek.Int64 != dow {
-				continue
-			}
-			expanded, err := gap.ExpandProtectedBlock(pb, day, loc)
-			if err != nil {
-				continue
-			}
-			allProtected = append(allProtected, expanded)
-		}
+		allProtected = append(allProtected, gap.ExpandProtectedBlocksForDate(protectedBlocks, day, loc)...)
 	}
 
 	schedInput := goal.ScheduleInput{
@@ -396,48 +366,31 @@ func (r *Runner) stepSuggest(
 	rangeStart := activeStart.UTC()
 	rangeEnd := activeEnd.UTC()
 
-	events, _ := r.queries.ListBlockingEventsInRange(ctx, sqlcdb.ListBlockingEventsInRangeParams{
+	events, err := r.queries.ListBlockingEventsInRange(ctx, sqlcdb.ListBlockingEventsInRangeParams{
 		RangeStart: rangeStart, RangeEnd: rangeEnd,
 	})
-	goalInstances, _ := r.queries.ListScheduledGoalInstancesInRangeWithLabel(ctx, sqlcdb.ListScheduledGoalInstancesInRangeWithLabelParams{
+	if err != nil {
+		return fmt.Errorf("loading events for suggestions: %w", err)
+	}
+	goalInstances, err := r.queries.ListScheduledGoalInstancesInRangeWithLabel(ctx, sqlcdb.ListScheduledGoalInstancesInRangeWithLabelParams{
 		RangeStart: rangeStart, RangeEnd: rangeEnd,
 	})
-	protectedBlocks, _ := r.queries.ListActiveProtectedBlocks(ctx)
-
-	var dayEvents []gap.BlockingEvent
-	for _, ev := range events {
-		title := ""
-		if ev.Title.Valid {
-			title = ev.Title.String
-		}
-		dayEvents = append(dayEvents, gap.BlockingEvent{
-			StartTime: ev.StartTime, EndTime: ev.EndTime,
-			AllDay: ev.AllDay, Busy: ev.Busy, Title: title,
-		})
+	if err != nil {
+		return fmt.Errorf("loading goal instances for suggestions: %w", err)
+	}
+	protectedBlocks, err := r.queries.ListActiveProtectedBlocks(ctx)
+	if err != nil {
+		return fmt.Errorf("loading protected blocks for suggestions: %w", err)
 	}
 
-	dow := int64(dayLocal.Weekday())
-	var dayProtected []gap.ProtectedBlock
-	for _, pb := range protectedBlocks {
-		if pb.DayOfWeek.Valid && pb.DayOfWeek.Int64 != dow {
-			continue
-		}
-		expanded, err := gap.ExpandProtectedBlock(pb, dayLocal.UTC(), loc)
-		if err != nil {
-			continue
-		}
-		dayProtected = append(dayProtected, expanded)
-	}
+	dayEvents := gap.ConvertBlockingEvents(events)
+	dayProtected := gap.ExpandProtectedBlocksForDate(protectedBlocks, dayLocal.UTC(), loc)
+	dayGoals := gap.ConvertGoalInstances(goalInstances)
 
-	var dayGoals []gap.GoalInstance
-	for _, gi := range goalInstances {
-		dayGoals = append(dayGoals, gap.GoalInstance{
-			StartTime: gi.ScheduledStart, EndTime: gi.ScheduledEnd,
-			Label: gi.GoalLabel,
-		})
+	prefMin, err := r.prefs.MinGapMinutes(ctx)
+	if err != nil {
+		r.log.Warn().Err(err).Msg("pipeline: failed to load min_gap_minutes, using 0")
 	}
-
-	prefMin, _ := r.prefs.MinGapMinutes(ctx)
 	gapInput := gap.Input{
 		Date: dayLocal.UTC(), ActiveStart: rangeStart, ActiveEnd: rangeEnd,
 		MinGapMinutes: prefMin, BlockingEvents: dayEvents,
@@ -478,7 +431,10 @@ func (r *Runner) stepSuggest(
 
 	// Load recent history.
 	lookback := targetDate.AddDate(0, 0, -14)
-	recentSuggestions, _ := r.queries.ListRecentSuggestions(ctx, lookback)
+	recentSuggestions, err := r.queries.ListRecentSuggestions(ctx, lookback)
+	if err != nil {
+		r.log.Warn().Err(err).Msg("pipeline: failed to load recent suggestions for prompt")
+	}
 	var history []suggest.HistoryItem
 	for _, s := range recentSuggestions {
 		history = append(history, suggest.HistoryItem{
@@ -489,7 +445,10 @@ func (r *Runner) stepSuggest(
 		})
 	}
 
-	allPrefs, _ := r.prefs.All(ctx)
+	allPrefs, err := r.prefs.All(ctx)
+	if err != nil {
+		r.log.Warn().Err(err).Msg("pipeline: failed to load preferences for prompt")
+	}
 
 	promptInput := suggest.PromptInput{
 		Date: targetDate, Gaps: gapContexts, Weather: forecast,
@@ -505,6 +464,7 @@ func (r *Runner) stepSuggest(
 	}
 
 	// Map suggestions to gap times and store.
+	saved := 0
 	for _, s := range result.Suggestions {
 		idx := s.GapNumber - 1
 		if idx < 0 || idx >= len(computed) {
@@ -519,7 +479,7 @@ func (r *Runner) stepSuggest(
 			weatherCtx = string(b)
 		}
 
-		r.queries.CreateActivitySuggestion(ctx, sqlcdb.CreateActivitySuggestionParams{
+		_, err := r.queries.CreateActivitySuggestion(ctx, sqlcdb.CreateActivitySuggestionParams{
 			SuggestedDate:  targetDate,
 			StartTime:      g.StartTime,
 			EndTime:        g.EndTime,
@@ -534,12 +494,17 @@ func (r *Runner) stepSuggest(
 			Reasoning:      toNullString(s.Reasoning),
 			LlmRequestID:   toNullString(result.RequestID),
 		})
+		if err != nil {
+			r.log.Error().Err(err).Str("title", s.Title).Msg("pipeline: failed to save suggestion")
+			continue
+		}
+		saved++
 	}
 
-	r.log.Info().Int("suggestions", len(result.Suggestions)).
+	r.log.Info().Int("saved", saved).Int("total", len(result.Suggestions)).
 		Int("input_tokens", result.InputTokens).
 		Int("output_tokens", result.OutputTokens).
-		Msg("pipeline: suggestions generated")
+		Msg("pipeline: suggestions stored")
 
 	return nil
 }
@@ -570,25 +535,31 @@ func (r *Runner) pushGoalToNylas(ctx context.Context, instance sqlcdb.GoalInstan
 		return
 	}
 
-	r.queries.UpdateGoalInstanceNylasEventID(ctx, sqlcdb.UpdateGoalInstanceNylasEventIDParams{
+	if _, err := r.queries.UpdateGoalInstanceNylasEventID(ctx, sqlcdb.UpdateGoalInstanceNylasEventIDParams{
 		NylasEventID: sql.NullString{String: evt.ID, Valid: true},
 		ID:           instance.ID,
-	})
+	}); err != nil {
+		r.log.Warn().Err(err).Int64("instance_id", instance.ID).Msg("pipeline: failed to store nylas_event_id")
+	}
 }
 
 func (r *Runner) completeStep(ctx context.Context, runID int64, step string) {
-	r.queries.UpdatePipelineRunStep(ctx, sqlcdb.UpdatePipelineRunStepParams{
+	if err := r.queries.UpdatePipelineRunStep(ctx, sqlcdb.UpdatePipelineRunStepParams{
 		LastCompletedStep: sql.NullString{String: step, Valid: true},
 		Metrics:           sql.NullString{},
 		ID:                runID,
-	})
+	}); err != nil {
+		r.log.Error().Err(err).Int64("run_id", runID).Str("step", step).Msg("pipeline: failed to update completed step")
+	}
 }
 
 func (r *Runner) failRun(ctx context.Context, runID int64, errMsg string) {
-	r.queries.FailPipelineRun(ctx, sqlcdb.FailPipelineRunParams{
+	if err := r.queries.FailPipelineRun(ctx, sqlcdb.FailPipelineRunParams{
 		ErrorMessage: sql.NullString{String: errMsg, Valid: true},
 		ID:           runID,
-	})
+	}); err != nil {
+		r.log.Error().Err(err).Int64("run_id", runID).Msg("pipeline: failed to mark run as failed")
+	}
 }
 
 func toNullString(s string) sql.NullString {

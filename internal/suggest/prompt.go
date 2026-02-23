@@ -57,7 +57,7 @@ const systemPrompt = `You are DriftCal, a personal lifestyle assistant that sugg
 
 Never suggest the same activity twice within 14 days. Vary locations, categories, and energy levels. If the user has rejected a category recently, reduce its frequency but don't eliminate it entirely.
 
-Respond with a JSON array of suggestions. Each suggestion must include all required fields. Do not include any text outside the JSON.`
+Use the suggest_activities tool to provide your suggestions. Each suggestion must include all required fields.`
 
 // BuildPrompt generates the system and user prompts from the input data.
 func BuildPrompt(input PromptInput) (system, user string) {

@@ -45,21 +45,25 @@ type GenerateResult struct {
 }
 
 // New creates a suggestion client. Returns nil if apiKey is empty.
-func New(apiKey string) *Client {
+// If model is empty, the default model is used.
+func New(apiKey, model string) *Client {
 	if apiKey == "" {
 		return nil
+	}
+	if model == "" {
+		model = defaultModel
 	}
 	return &Client{
 		apiKey:  apiKey,
 		baseURL: defaultBaseURL,
-		model:   defaultModel,
+		model:   model,
 		http:    &http.Client{Timeout: 60 * time.Second},
 	}
 }
 
 // NewWithBaseURL creates a suggestion client with a custom base URL (for tests).
 func NewWithBaseURL(apiKey, baseURL string) *Client {
-	c := New(apiKey)
+	c := New(apiKey, "")
 	if c != nil {
 		c.baseURL = baseURL
 	}
@@ -67,22 +71,9 @@ func NewWithBaseURL(apiKey, baseURL string) *Client {
 }
 
 // Generate calls the Anthropic Messages API with the suggest_activities tool
-// and returns parsed suggestions.
+// and returns parsed suggestions. Uses tool_choice to force tool use.
 func (c *Client) Generate(ctx context.Context, systemPrompt, userPrompt string) (*GenerateResult, error) {
-	result, err := c.callAPI(ctx, systemPrompt, userPrompt, 0.9)
-	if err != nil {
-		return nil, err
-	}
-
-	// If no suggestions were extracted (no tool_use block), retry with lower temperature.
-	if len(result.Suggestions) == 0 {
-		result, err = c.callAPI(ctx, systemPrompt, userPrompt, 0.5)
-		if err != nil {
-			return nil, err
-		}
-	}
-
-	return result, nil
+	return c.callAPI(ctx, systemPrompt, userPrompt, 0.9)
 }
 
 func (c *Client) callAPI(ctx context.Context, systemPrompt, userPrompt string, temperature float64) (*GenerateResult, error) {
@@ -94,7 +85,8 @@ func (c *Client) callAPI(ctx context.Context, systemPrompt, userPrompt string, t
 		Messages: []message{
 			{Role: "user", Content: userPrompt},
 		},
-		Tools: []tool{suggestActivitiesTool()},
+		Tools:      []tool{suggestActivitiesTool()},
+		ToolChoice: &toolChoice{Type: "tool", Name: "suggest_activities"},
 	}
 
 	payload, err := json.Marshal(reqBody)
@@ -156,12 +148,18 @@ func (c *Client) callAPI(ctx context.Context, systemPrompt, userPrompt string, t
 // --- API types ---
 
 type messagesRequest struct {
-	Model       string    `json:"model"`
-	MaxTokens   int       `json:"max_tokens"`
-	Temperature float64   `json:"temperature"`
-	System      string    `json:"system"`
-	Messages    []message `json:"messages"`
-	Tools       []tool    `json:"tools"`
+	Model       string      `json:"model"`
+	MaxTokens   int         `json:"max_tokens"`
+	Temperature float64     `json:"temperature"`
+	System      string      `json:"system"`
+	Messages    []message   `json:"messages"`
+	Tools       []tool      `json:"tools"`
+	ToolChoice  *toolChoice `json:"tool_choice,omitempty"`
+}
+
+type toolChoice struct {
+	Type string `json:"type"`
+	Name string `json:"name"`
 }
 
 type message struct {
