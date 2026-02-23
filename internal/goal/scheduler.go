@@ -111,7 +111,7 @@ func Schedule(input ScheduleInput) (ScheduleResult, error) {
 
 	// Build per-day gaps for the week.
 	// We maintain a mutable list of available gaps that shrinks as goals are placed.
-	weekGaps, err := buildWeekGaps(input)
+	weekGaps, err := BuildWeekGaps(input)
 	if err != nil {
 		return result, err
 	}
@@ -282,8 +282,8 @@ func meetsMinSpacing(slotStart time.Time, instances []sqlcdb.GoalInstance, minGa
 	return true
 }
 
-// buildWeekGaps computes available gaps for each day of the week.
-func buildWeekGaps(input ScheduleInput) ([]gap.Gap, error) {
+// BuildWeekGaps computes available gaps for each day of the week.
+func BuildWeekGaps(input ScheduleInput) ([]gap.Gap, error) {
 	var allGaps []gap.Gap
 
 	for dayOffset := 0; dayOffset < 7; dayOffset++ {

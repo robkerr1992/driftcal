@@ -57,7 +57,7 @@ func (s *Server) routes() http.Handler {
 		r.Patch("/goals/{id}", handler.UpdateGoal(s.queries, s.log))
 		r.Delete("/goals/{id}", handler.DeleteGoal(s.queries, s.log))
 		r.Get("/goals/{id}/instances", handler.ListGoalInstances(s.queries, s.log))
-		r.Post("/goals/{id}/instances/{instance_id}/skip", handler.SkipGoalInstance(s.queries, s.log))
+		r.Post("/goals/{id}/instances/{instance_id}/skip", handler.SkipGoalInstance(s.queries, s.prefs, s.nylas, s.log))
 		r.Post("/goals/{id}/instances/{instance_id}/complete", handler.CompleteGoalInstance(s.queries, s.log))
 	})
 

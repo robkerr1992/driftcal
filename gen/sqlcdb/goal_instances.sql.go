@@ -275,6 +275,33 @@ func (q *Queries) ListScheduledGoalInstancesInRangeWithLabel(ctx context.Context
 	return items, nil
 }
 
+const updateGoalInstanceNylasEventID = `-- name: UpdateGoalInstanceNylasEventID :one
+UPDATE goal_instances SET nylas_event_id = ?, updated_at = CURRENT_TIMESTAMP
+WHERE id = ? RETURNING id, goal_id, week_start, scheduled_start, scheduled_end, status, nylas_event_id, created_at, updated_at
+`
+
+type UpdateGoalInstanceNylasEventIDParams struct {
+	NylasEventID sql.NullString `json:"nylas_event_id"`
+	ID           int64          `json:"id"`
+}
+
+func (q *Queries) UpdateGoalInstanceNylasEventID(ctx context.Context, arg UpdateGoalInstanceNylasEventIDParams) (GoalInstance, error) {
+	row := q.db.QueryRowContext(ctx, updateGoalInstanceNylasEventID, arg.NylasEventID, arg.ID)
+	var i GoalInstance
+	err := row.Scan(
+		&i.ID,
+		&i.GoalID,
+		&i.WeekStart,
+		&i.ScheduledStart,
+		&i.ScheduledEnd,
+		&i.Status,
+		&i.NylasEventID,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+	)
+	return i, err
+}
+
 const updateGoalInstanceStatus = `-- name: UpdateGoalInstanceStatus :one
 UPDATE goal_instances SET
     status = ?,
