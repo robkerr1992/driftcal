@@ -10,6 +10,28 @@ import (
 	"time"
 )
 
+const countBlockingEventsInRange = `-- name: CountBlockingEventsInRange :one
+SELECT COUNT(*) AS count FROM events e
+JOIN calendars c ON e.calendar_id = c.id
+WHERE c.is_blocking = 1 AND c.is_active = 1
+  AND e.status != 'cancelled' AND e.busy != 'free'
+  AND e.start_time < ?1 AND e.end_time > ?2
+`
+
+type CountBlockingEventsInRangeParams struct {
+	RangeEnd   time.Time `json:"range_end"`
+	RangeStart time.Time `json:"range_start"`
+}
+
+// Returns the number of blocking events that overlap the given time range.
+// Used for conflict checks at suggestion approval time.
+func (q *Queries) CountBlockingEventsInRange(ctx context.Context, arg CountBlockingEventsInRangeParams) (int64, error) {
+	row := q.db.QueryRowContext(ctx, countBlockingEventsInRange, arg.RangeEnd, arg.RangeStart)
+	var count int64
+	err := row.Scan(&count)
+	return count, err
+}
+
 const listBlockingEventsInRange = `-- name: ListBlockingEventsInRange :many
 SELECT e.id, e.calendar_id, e.nylas_event_id, e.title, e.description, e.location, e.start_time, e.end_time, e.original_tz, e.all_day, e.status, e.busy, e.category, e.recurrence_rule, e.raw_data, e.created_at, e.updated_at FROM events e
 JOIN calendars c ON e.calendar_id = c.id

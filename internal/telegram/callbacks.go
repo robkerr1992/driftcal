@@ -2,6 +2,7 @@ package telegram
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strconv"
 	"strings"
@@ -69,7 +70,12 @@ func (b *Bot) handleCallbackQuery(ctx context.Context, cq *CallbackQuery) {
 func (b *Bot) callbackApproveSuggestion(ctx context.Context, chatID int64, msgID int, id int64) {
 	_, err := action.ApproveSuggestion(ctx, b.queries, b.nylasClient, id, b.log)
 	if err != nil {
-		b.editResult(ctx, chatID, msgID, fmt.Sprintf("Failed to approve: %s", err.Error()))
+		if errors.Is(err, action.ErrConflict) {
+			b.editResult(ctx, chatID, msgID, "This time slot now has a conflict. Try /regenerate for fresh suggestions.")
+			return
+		}
+		b.log.Error().Err(err).Int64("suggestion_id", id).Msg("callback: approve failed")
+		b.editResult(ctx, chatID, msgID, "Something went wrong. Please try again.")
 		return
 	}
 	b.editResult(ctx, chatID, msgID, "Added to calendar!")
@@ -78,7 +84,8 @@ func (b *Bot) callbackApproveSuggestion(ctx context.Context, chatID int64, msgID
 func (b *Bot) callbackRejectSuggestion(ctx context.Context, chatID int64, msgID int, id int64) {
 	_, err := action.RejectSuggestion(ctx, b.queries, id, "", b.log)
 	if err != nil {
-		b.editResult(ctx, chatID, msgID, fmt.Sprintf("Failed to reject: %s", err.Error()))
+		b.log.Error().Err(err).Int64("suggestion_id", id).Msg("callback: reject failed")
+		b.editResult(ctx, chatID, msgID, "Something went wrong. Please try again.")
 		return
 	}
 	b.editResult(ctx, chatID, msgID, "Skipped")
@@ -88,13 +95,15 @@ func (b *Bot) callbackCompleteGoal(ctx context.Context, chatID int64, msgID int,
 	// Look up the goal instance to get the goal_id.
 	instance, err := b.queries.GetGoalInstance(ctx, instanceID)
 	if err != nil {
-		b.editResult(ctx, chatID, msgID, fmt.Sprintf("Failed: %s", err.Error()))
+		b.log.Error().Err(err).Int64("instance_id", instanceID).Msg("callback: complete lookup failed")
+		b.editResult(ctx, chatID, msgID, "Something went wrong. Please try again.")
 		return
 	}
 
 	_, err = action.CompleteGoalInstance(ctx, b.queries, instance.GoalID, instanceID, b.log)
 	if err != nil {
-		b.editResult(ctx, chatID, msgID, fmt.Sprintf("Failed to complete: %s", err.Error()))
+		b.log.Error().Err(err).Int64("instance_id", instanceID).Msg("callback: complete failed")
+		b.editResult(ctx, chatID, msgID, "Something went wrong. Please try again.")
 		return
 	}
 	b.editResult(ctx, chatID, msgID, "Completed!")
@@ -103,13 +112,15 @@ func (b *Bot) callbackCompleteGoal(ctx context.Context, chatID int64, msgID int,
 func (b *Bot) callbackSkipGoal(ctx context.Context, chatID int64, msgID int, instanceID int64) {
 	instance, err := b.queries.GetGoalInstance(ctx, instanceID)
 	if err != nil {
-		b.editResult(ctx, chatID, msgID, fmt.Sprintf("Failed: %s", err.Error()))
+		b.log.Error().Err(err).Int64("instance_id", instanceID).Msg("callback: skip lookup failed")
+		b.editResult(ctx, chatID, msgID, "Something went wrong. Please try again.")
 		return
 	}
 
 	_, rescheduled, err := action.SkipGoalInstance(ctx, b.queries, b.prefs, b.nylasClient, instance.GoalID, instanceID, b.log)
 	if err != nil {
-		b.editResult(ctx, chatID, msgID, fmt.Sprintf("Failed to skip: %s", err.Error()))
+		b.log.Error().Err(err).Int64("instance_id", instanceID).Msg("callback: skip failed")
+		b.editResult(ctx, chatID, msgID, "Something went wrong. Please try again.")
 		return
 	}
 
