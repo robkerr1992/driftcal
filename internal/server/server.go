@@ -103,7 +103,7 @@ func New(cfg *config.Config, db *sql.DB, log zerolog.Logger) *Server {
 
 	// Initialize scheduler when both pipeline and telegram bot are available.
 	if s.pipeline != nil && s.telegramBot != nil {
-		s.scheduler = scheduler.New(s.prefs, q, s.pipeline, s.telegramBot, log)
+		s.scheduler = scheduler.New(s.prefs, db, q, s.pipeline, s.telegramBot, log)
 	}
 
 	return s

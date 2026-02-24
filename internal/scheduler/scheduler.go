@@ -2,6 +2,7 @@ package scheduler
 
 import (
 	"context"
+	"database/sql"
 	"fmt"
 	"strconv"
 	"strings"
@@ -32,16 +33,19 @@ type PipelineRunner interface {
 //   - Maintenance (midnight) — cleans up old data
 type Scheduler struct {
 	cron     *cron.Cron
+	db       *sql.DB
 	prefs    *preferences.Store
 	queries  *sqlcdb.Queries
 	pipeline PipelineRunner
 	bot      DigestSender
 	log      zerolog.Logger
+	now      func() time.Time // injectable clock for testing
 }
 
 // New creates a Scheduler. Call Start to begin running jobs.
 func New(
 	prefs *preferences.Store,
+	db *sql.DB,
 	queries *sqlcdb.Queries,
 	pipeline PipelineRunner,
 	bot DigestSender,
@@ -49,10 +53,12 @@ func New(
 ) *Scheduler {
 	return &Scheduler{
 		prefs:    prefs,
+		db:       db,
 		queries:  queries,
 		pipeline: pipeline,
 		bot:      bot,
 		log:      log.With().Str("component", "scheduler").Logger(),
+		now:      time.Now,
 	}
 }
 
@@ -118,11 +124,14 @@ func (s *Scheduler) Stop() {
 	}
 }
 
-// tomorrow returns midnight tomorrow in the given timezone, converted to UTC.
-func tomorrow(tz *time.Location) time.Time {
-	now := time.Now().In(tz)
+// tomorrow returns UTC midnight for tomorrow's date in the given timezone.
+// This matches the codebase convention where dates are represented as
+// time.Date(y, m, d, 0, 0, 0, 0, time.UTC) — the date component is
+// determined by the user's local clock, but stored as UTC midnight.
+func (s *Scheduler) tomorrow(tz *time.Location) time.Time {
+	now := s.now().In(tz)
 	y, m, d := now.Date()
-	return time.Date(y, m, d+1, 0, 0, 0, 0, tz).UTC()
+	return time.Date(y, m, d+1, 0, 0, 0, 0, time.UTC)
 }
 
 // jobDailyPipeline runs the suggestion pipeline for tomorrow and notifies
@@ -131,7 +140,7 @@ func (s *Scheduler) jobDailyPipeline(tz *time.Location) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
 	defer cancel()
 
-	target := tomorrow(tz)
+	target := s.tomorrow(tz)
 	s.log.Info().Time("target_date", target).Msg("running daily pipeline")
 
 	if err := s.pipeline.RunDailyPipeline(ctx, target); err != nil {
@@ -147,7 +156,7 @@ func (s *Scheduler) jobMorningDigest(tz *time.Location) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
-	target := tomorrow(tz)
+	target := s.tomorrow(tz)
 	s.log.Info().Time("target_date", target).Msg("sending morning digest")
 
 	if err := s.bot.SendDailyDigest(ctx, target); err != nil {
@@ -167,32 +176,54 @@ func (s *Scheduler) jobMaintenance() {
 
 	s.log.Info().Msg("running maintenance cleanup")
 
-	cutoff := time.Now().AddDate(0, 0, -retentionDays)
+	now := s.now()
+	cutoff := now.AddDate(0, 0, -retentionDays)
 
 	// Expire stale pending suggestions (sets status to 'expired').
-	if err := s.queries.ExpireStaleSuggestions(ctx, time.Now()); err != nil {
+	if err := s.queries.ExpireStaleSuggestions(ctx, now); err != nil {
 		s.log.Error().Err(err).Msg("maintenance: expire stale suggestions failed")
 	}
 
-	// Delete old data in FK-safe order.
+	// Delete old data in a single transaction, in FK-safe order.
+	if err := s.retentionDelete(ctx, cutoff); err != nil {
+		s.log.Error().Err(err).Msg("maintenance: retention delete failed")
+	}
+
+	s.log.Info().Time("cutoff", cutoff).Msg("maintenance cleanup complete")
+}
+
+// retentionDelete removes data older than cutoff in a single transaction.
+// Deletion order respects FK constraints: feedback before suggestions.
+func (s *Scheduler) retentionDelete(ctx context.Context, cutoff time.Time) error {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("beginning retention tx: %w", err)
+	}
+	defer tx.Rollback() //nolint:errcheck
+
+	qtx := s.queries.WithTx(tx)
+
 	steps := []struct {
 		name string
 		fn   func(context.Context, time.Time) error
 	}{
-		{"suggestion_feedback", s.queries.DeleteOldSuggestionFeedback},
-		{"activity_suggestions", s.queries.DeleteOldSuggestions},
-		{"events", s.queries.DeleteOldEvents},
-		{"daily_gaps", s.queries.DeleteOldDailyGaps},
-		{"pipeline_runs", s.queries.DeleteOldPipelineRuns},
+		{"suggestion_feedback", qtx.DeleteOldSuggestionFeedback},
+		{"activity_suggestions", qtx.DeleteOldSuggestions},
+		{"events", qtx.DeleteOldEvents},
+		{"daily_gaps", qtx.DeleteOldDailyGaps},
+		{"pipeline_runs", qtx.DeleteOldPipelineRuns},
 	}
 
 	for _, step := range steps {
 		if err := step.fn(ctx, cutoff); err != nil {
-			s.log.Error().Err(err).Str("table", step.name).Msg("maintenance: retention delete failed")
+			return fmt.Errorf("deleting old %s: %w", step.name, err)
 		}
 	}
 
-	s.log.Info().Time("cutoff", cutoff).Msg("maintenance cleanup complete")
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("committing retention tx: %w", err)
+	}
+	return nil
 }
 
 // buildDigestSpec converts an "HH:MM" time string into a 6-field cron spec

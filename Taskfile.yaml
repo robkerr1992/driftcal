@@ -70,7 +70,7 @@ tasks:
         msg: "REMOTE is required (e.g., task deploy REMOTE=user@host)"
     cmds:
       - scp {{.BINARY}}-linux-amd64 deploy/driftcal.service {{.REMOTE}}:/tmp/
-      - ssh {{.REMOTE}} 'sudo mv /tmp/{{.BINARY}}-linux-amd64 /opt/driftcal/{{.BINARY}} && sudo mv /tmp/driftcal.service /etc/systemd/system/ && sudo systemctl daemon-reload && sudo systemctl restart driftcal'
+      - ssh {{.REMOTE}} 'sudo mv /tmp/{{.BINARY}}-linux-amd64 /opt/driftcal/{{.BINARY}} && sudo mv /tmp/driftcal.service /etc/systemd/system/ && sudo systemctl daemon-reload && sudo systemctl restart driftcal && sleep 2 && sudo systemctl is-active --quiet driftcal && echo "Deploy successful" || (echo "DEPLOY FAILED - service not running"; sudo journalctl -u driftcal -n 20 --no-pager; exit 1)'
 
   check:
     desc: Run fmt, lint, and test
