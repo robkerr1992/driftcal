@@ -1,0 +1,25 @@
+[Unit]
+Description=Litestream SQLite replication for DriftCal
+After=network-online.target
+Wants=network-online.target
+# Start Litestream before DriftCal so replication is ready.
+Before=driftcal.service
+
+[Service]
+Type=simple
+User=driftcal
+Group=driftcal
+ExecStart=/usr/local/bin/litestream replicate -config /opt/driftcal/litestream.yml
+Restart=on-failure
+RestartSec=5
+EnvironmentFile=/opt/driftcal/.env
+
+# Hardening
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+ReadWritePaths=/opt/driftcal
+
+[Install]
+WantedBy=multi-user.target

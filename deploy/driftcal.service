@@ -1,0 +1,29 @@
+[Unit]
+Description=DriftCal - AI-powered daily activity planner
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=driftcal
+Group=driftcal
+WorkingDirectory=/opt/driftcal
+ExecStart=/opt/driftcal/driftcal
+EnvironmentFile=/opt/driftcal/.env
+Restart=on-failure
+RestartSec=5
+
+# Hardening
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+ReadWritePaths=/opt/driftcal
+
+# Logging (stdout/stderr to journald)
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=driftcal
+
+[Install]
+WantedBy=multi-user.target

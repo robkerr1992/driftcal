@@ -1,0 +1,11 @@
+dbs:
+  - path: /opt/driftcal/driftcal.db
+    replicas:
+      - type: s3
+        bucket: ${LITESTREAM_BUCKET}
+        path: driftcal
+        region: ${LITESTREAM_REGION}
+        access-key-id: ${LITESTREAM_ACCESS_KEY_ID}
+        secret-access-key: ${LITESTREAM_SECRET_ACCESS_KEY}
+        retention: 72h
+        sync-interval: 60s

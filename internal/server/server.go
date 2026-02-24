@@ -18,6 +18,7 @@ import (
 	"github.com/robkerr1992/driftcal/internal/nylas"
 	"github.com/robkerr1992/driftcal/internal/pipeline"
 	"github.com/robkerr1992/driftcal/internal/preferences"
+	"github.com/robkerr1992/driftcal/internal/scheduler"
 	"github.com/robkerr1992/driftcal/internal/suggest"
 	syncpkg "github.com/robkerr1992/driftcal/internal/sync"
 	"github.com/robkerr1992/driftcal/internal/telegram"
@@ -38,6 +39,7 @@ type Server struct {
 	suggestClient  *suggest.Client
 	pipeline       *pipeline.Runner
 	telegramBot    *telegram.Bot
+	scheduler      *scheduler.Scheduler
 }
 
 // New creates a Server with all required dependencies.
@@ -99,6 +101,11 @@ func New(cfg *config.Config, db *sql.DB, log zerolog.Logger) *Server {
 		)
 	}
 
+	// Initialize scheduler when both pipeline and telegram bot are available.
+	if s.pipeline != nil && s.telegramBot != nil {
+		s.scheduler = scheduler.New(s.prefs, db, q, s.pipeline, s.telegramBot, log)
+	}
+
 	return s
 }
 
@@ -128,6 +135,13 @@ func (s *Server) Run() error {
 		s.syncer.Start()
 	}
 
+	// Start scheduler after syncer (non-fatal on error).
+	if s.scheduler != nil {
+		if err := s.scheduler.Start(context.Background()); err != nil {
+			s.log.Warn().Err(err).Msg("failed to start scheduler (non-fatal)")
+		}
+	}
+
 	// Register Telegram webhook (non-fatal on error).
 	if s.telegramBot != nil && s.cfg.BaseURL != "" {
 		webhookURL := s.cfg.BaseURL + "/api/webhooks/telegram"
@@ -147,7 +161,12 @@ func (s *Server) Run() error {
 	case sig := <-shutdown:
 		s.log.Info().Str("signal", sig.String()).Msg("shutdown signal received")
 
-		// Stop syncer first
+		// Stop scheduler first (no new pipeline runs start).
+		if s.scheduler != nil {
+			s.scheduler.Stop()
+		}
+
+		// Then stop syncer.
 		if s.syncer != nil {
 			s.syncer.Stop()
 		}
