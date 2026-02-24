@@ -13,16 +13,23 @@ import (
 	"github.com/robkerr1992/driftcal/gen/sqlcdb"
 	"github.com/robkerr1992/driftcal/internal/action"
 	"github.com/robkerr1992/driftcal/internal/pipeline"
+	"github.com/robkerr1992/driftcal/internal/preferences"
 )
 
 // ListSuggestions returns pending suggestions for a given date.
-// Query param: ?date=YYYY-MM-DD (defaults to tomorrow).
-func ListSuggestions(q *sqlcdb.Queries, log zerolog.Logger) http.HandlerFunc {
+// Query param: ?date=YYYY-MM-DD (defaults to tomorrow in user's timezone).
+func ListSuggestions(q *sqlcdb.Queries, prefs *preferences.Store, log zerolog.Logger) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		dateStr := r.URL.Query().Get("date")
 		var date time.Time
 		if dateStr == "" {
-			now := time.Now().UTC()
+			// Use user timezone for "today" so the default date is correct
+			// after local midnight even if UTC hasn't rolled over yet.
+			loc := time.UTC
+			if tz, err := prefs.Timezone(r.Context()); err == nil && tz != nil {
+				loc = tz
+			}
+			now := time.Now().In(loc)
 			date = time.Date(now.Year(), now.Month(), now.Day()+1, 0, 0, 0, 0, time.UTC)
 		} else {
 			var err error

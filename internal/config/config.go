@@ -3,8 +3,10 @@ package config
 import (
 	"errors"
 	"fmt"
+	"net/url"
 	"os"
 	"strconv"
+	"strings"
 
 	"github.com/joho/godotenv"
 )
@@ -96,6 +98,18 @@ func Load() (*Config, error) {
 			return nil, fmt.Errorf("TELEGRAM_AUTHORIZED_USER_ID must be a valid integer, got %q", raw)
 		}
 		cfg.TelegramAuthorizedUser = id
+	}
+
+	// Validate BASE_URL if set — must have https scheme (or http for localhost).
+	if cfg.BaseURL != "" {
+		u, err := url.Parse(cfg.BaseURL)
+		if err != nil {
+			return nil, fmt.Errorf("DRIFTCAL_BASE_URL is not a valid URL: %w", err)
+		}
+		if u.Scheme != "https" && !(u.Scheme == "http" && (u.Hostname() == "localhost" || u.Hostname() == "127.0.0.1")) {
+			return nil, fmt.Errorf("DRIFTCAL_BASE_URL must use https (got %q)", u.Scheme)
+		}
+		cfg.BaseURL = strings.TrimRight(cfg.BaseURL, "/")
 	}
 
 	return cfg, nil

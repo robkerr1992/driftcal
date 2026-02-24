@@ -37,6 +37,7 @@ type Bot struct {
 	regenMu        sync.Mutex
 	conversation   *ConversationState
 	convMu         sync.Mutex
+	webhookSem     chan struct{} // bounds concurrent webhook handlers
 }
 
 // NewBot creates a new Bot instance.
@@ -61,6 +62,7 @@ func NewBot(
 		log:            log.With().Str("component", "telegram_bot").Logger(),
 		startTime:      time.Now(),
 		cmdLimiter:     rate.NewLimiter(rate.Every(6*time.Second), 10), // 10/min
+		webhookSem:     make(chan struct{}, 50),                        // max 50 concurrent handlers
 	}
 }
 

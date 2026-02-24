@@ -141,3 +141,40 @@ func TestConfig_Addr(t *testing.T) {
 		t.Errorf("Addr() = %q, want %q", got, want)
 	}
 }
+
+func TestLoad_BaseURLValidation(t *testing.T) {
+	cases := []struct {
+		name    string
+		url     string
+		wantErr bool
+		wantURL string
+	}{
+		{"valid https", "https://driftcal.example.com", false, "https://driftcal.example.com"},
+		{"strips trailing slash", "https://driftcal.example.com/", false, "https://driftcal.example.com"},
+		{"http rejected", "http://driftcal.example.com", true, ""},
+		{"http localhost allowed", "http://localhost:8080", false, "http://localhost:8080"},
+		{"http 127.0.0.1 allowed", "http://127.0.0.1:8080", false, "http://127.0.0.1:8080"},
+		{"empty is ok", "", false, ""},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Setenv("DRIFTCAL_API_KEY", "test-key")
+			t.Setenv("DRIFTCAL_BASE_URL", tc.url)
+
+			cfg, err := Load()
+			if tc.wantErr {
+				if err == nil {
+					t.Fatalf("expected error for URL %q", tc.url)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("unexpected error for URL %q: %v", tc.url, err)
+			}
+			if cfg.BaseURL != tc.wantURL {
+				t.Errorf("BaseURL = %q, want %q", cfg.BaseURL, tc.wantURL)
+			}
+		})
+	}
+}

@@ -119,7 +119,7 @@ func TestAccountCallback_Success(t *testing.T) {
 	h := AccountCallback(mock, "https://example.com", q, log)
 
 	state := "test-state-success"
-	storeState(state)
+	storeState(t.Context(), q, state)
 
 	req := httptest.NewRequest(http.MethodGet, "/api/accounts/callback?code=auth-code-xyz&state="+state, nil)
 	rec := httptest.NewRecorder()
@@ -169,7 +169,7 @@ func TestAccountCallback_ExchangeError(t *testing.T) {
 	h := AccountCallback(mock, "https://example.com", q, log)
 
 	state := "test-state-exchange-err"
-	storeState(state)
+	storeState(t.Context(), q, state)
 
 	req := httptest.NewRequest(http.MethodGet, "/api/accounts/callback?code=bad&state="+state, nil)
 	rec := httptest.NewRecorder()
@@ -196,7 +196,7 @@ func TestAccountCallback_CalendarFetchFails(t *testing.T) {
 	h := AccountCallback(mock, "https://example.com", q, log)
 
 	state := "test-state-cal-fail"
-	storeState(state)
+	storeState(t.Context(), q, state)
 
 	req := httptest.NewRequest(http.MethodGet, "/api/accounts/callback?code=code1&state="+state, nil)
 	rec := httptest.NewRecorder()
@@ -240,7 +240,7 @@ func TestAccountCallback_DuplicateGrant(t *testing.T) {
 
 	// First call: creates account
 	state1 := "test-state-dup-1"
-	storeState(state1)
+	storeState(t.Context(), q, state1)
 	req := httptest.NewRequest(http.MethodGet, "/api/accounts/callback?code=code1&state="+state1, nil)
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
@@ -250,7 +250,7 @@ func TestAccountCallback_DuplicateGrant(t *testing.T) {
 
 	// Second call: duplicate grant_id → 409
 	state2 := "test-state-dup-2"
-	storeState(state2)
+	storeState(t.Context(), q, state2)
 	req = httptest.NewRequest(http.MethodGet, "/api/accounts/callback?code=code2&state="+state2, nil)
 	rec = httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
@@ -417,7 +417,7 @@ func TestAccountCallback_PartialCalendarFailure(t *testing.T) {
 	h := AccountCallback(mock, "https://example.com", q, log)
 
 	state := "test-state-partial"
-	storeState(state)
+	storeState(t.Context(), q, state)
 
 	req := httptest.NewRequest(http.MethodGet, "/api/accounts/callback?code=code1&state="+state, nil)
 	rec := httptest.NewRecorder()

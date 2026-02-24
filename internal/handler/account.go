@@ -10,7 +10,6 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/go-chi/chi/v5"
@@ -21,18 +20,14 @@ import (
 	"github.com/robkerr1992/driftcal/internal/nylas"
 )
 
+const stateMaxAge = 10 * time.Minute
+
 // NylasAccountService defines the Nylas operations needed by account handlers.
 type NylasAccountService interface {
 	AuthURL(redirectURI, provider, state string) string
 	ExchangeCode(ctx context.Context, code, redirectURI string) (*nylas.TokenResponse, error)
 	ListCalendars(ctx context.Context, grantID string) ([]nylas.Calendar, error)
 }
-
-// pendingStates stores OAuth state tokens awaiting callback. Each entry
-// maps state → expiry time. Expired entries are lazily cleaned on insert.
-var pendingStates sync.Map
-
-const stateMaxAge = 10 * time.Minute
 
 func generateState() (string, error) {
 	b := make([]byte, 16)
@@ -42,17 +37,21 @@ func generateState() (string, error) {
 	return hex.EncodeToString(b), nil
 }
 
-func storeState(state string) {
-	pendingStates.Store(state, time.Now().Add(stateMaxAge))
+func storeState(ctx context.Context, q *sqlcdb.Queries, state string) error {
+	// Lazily clean expired states.
+	q.DeleteExpiredOAuthStates(ctx, time.Now().UTC())
+	return q.InsertOAuthState(ctx, sqlcdb.InsertOAuthStateParams{
+		State:     state,
+		ExpiresAt: time.Now().UTC().Add(stateMaxAge),
+	})
 }
 
-func consumeState(state string) bool {
-	v, ok := pendingStates.LoadAndDelete(state)
-	if !ok {
-		return false
-	}
-	expiry := v.(time.Time)
-	return time.Now().Before(expiry)
+func consumeState(ctx context.Context, q *sqlcdb.Queries, state string) bool {
+	_, err := q.ConsumeOAuthState(ctx, sqlcdb.ConsumeOAuthStateParams{
+		State:     state,
+		ExpiresAt: time.Now().UTC(),
+	})
+	return err == nil
 }
 
 // ConnectAccount returns the Nylas OAuth URL for a given provider.
@@ -81,7 +80,11 @@ func ConnectAccount(nc NylasAccountService, baseURL string, q *sqlcdb.Queries, l
 			RespondError(w, http.StatusInternalServerError, "internal_error", "failed to generate state", log)
 			return
 		}
-		storeState(state)
+		if err := storeState(r.Context(), q, state); err != nil {
+			log.Error().Err(err).Msg("failed to store OAuth state")
+			RespondError(w, http.StatusInternalServerError, "internal_error", "failed to store state", log)
+			return
+		}
 
 		redirectURI := baseURL + "/api/accounts/callback"
 		authURL := nc.AuthURL(redirectURI, provider, state)
@@ -101,7 +104,7 @@ func AccountCallback(nc NylasAccountService, baseURL string, q *sqlcdb.Queries, 
 		}
 
 		state := r.URL.Query().Get("state")
-		if state == "" || !consumeState(state) {
+		if state == "" || !consumeState(r.Context(), q, state) {
 			RespondError(w, http.StatusBadRequest, "bad_request", "invalid or expired state parameter", log)
 			return
 		}

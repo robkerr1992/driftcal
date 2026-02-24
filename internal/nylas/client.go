@@ -11,6 +11,7 @@ import (
 	"strconv"
 	"time"
 
+	"github.com/sethvargo/go-retry"
 	"golang.org/x/time/rate"
 )
 
@@ -174,7 +175,8 @@ func (c *Client) post(ctx context.Context, path string, body, dest any) error {
 	return c.do(req, dest)
 }
 
-// do executes the request with auth headers and handles response parsing.
+// do executes the request with auth headers, retry on transient errors,
+// and handles response parsing.
 func (c *Client) do(req *http.Request, dest any) error {
 	if err := c.limiter.Wait(req.Context()); err != nil {
 		return fmt.Errorf("rate limiter: %w", err)
@@ -183,29 +185,37 @@ func (c *Client) do(req *http.Request, dest any) error {
 	req.Header.Set("Authorization", "Bearer "+c.apiKey)
 	req.Header.Set("Accept", "application/json")
 
-	resp, err := c.http.Do(req)
-	if err != nil {
-		return fmt.Errorf("executing request: %w", err)
-	}
-	defer resp.Body.Close()
+	b := retry.NewExponential(2 * time.Second)
+	b = retry.WithMaxRetries(3, b)
 
-	const maxResponseBytes = 10 << 20 // 10 MB
-	respBody, err := io.ReadAll(io.LimitReader(resp.Body, maxResponseBytes+1))
-	if err != nil {
-		return fmt.Errorf("reading response body: %w", err)
-	}
-	if int64(len(respBody)) > maxResponseBytes {
-		return fmt.Errorf("response body exceeded %d bytes", maxResponseBytes)
-	}
-
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return fmt.Errorf("nylas API error (status %d): %s", resp.StatusCode, string(respBody))
-	}
-
-	if dest != nil {
-		if err := json.Unmarshal(respBody, dest); err != nil {
-			return fmt.Errorf("decoding response: %w", err)
+	return retry.Do(req.Context(), b, func(ctx context.Context) error {
+		resp, err := c.http.Do(req.WithContext(ctx))
+		if err != nil {
+			return retry.RetryableError(fmt.Errorf("executing request: %w", err))
 		}
-	}
-	return nil
+		defer resp.Body.Close()
+
+		const maxResponseBytes = 10 << 20 // 10 MB
+		respBody, err := io.ReadAll(io.LimitReader(resp.Body, maxResponseBytes+1))
+		if err != nil {
+			return fmt.Errorf("reading response body: %w", err)
+		}
+		if int64(len(respBody)) > maxResponseBytes {
+			return fmt.Errorf("response body exceeded %d bytes", maxResponseBytes)
+		}
+
+		if resp.StatusCode == 429 || resp.StatusCode >= 500 {
+			return retry.RetryableError(fmt.Errorf("nylas API error (status %d): %s", resp.StatusCode, string(respBody)))
+		}
+		if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+			return fmt.Errorf("nylas API error (status %d): %s", resp.StatusCode, string(respBody))
+		}
+
+		if dest != nil {
+			if err := json.Unmarshal(respBody, dest); err != nil {
+				return fmt.Errorf("decoding response: %w", err)
+			}
+		}
+		return nil
+	})
 }
