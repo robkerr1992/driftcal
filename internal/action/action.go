@@ -28,6 +28,9 @@ var ErrNotFound = errors.New("not found")
 // ErrInvalidStatus indicates the resource is not in a valid state for the operation.
 var ErrInvalidStatus = errors.New("invalid status")
 
+// ErrConflict indicates the time slot now has a conflicting event.
+var ErrConflict = errors.New("time slot conflict")
+
 // ApproveSuggestion transitions a pending suggestion to approved, records feedback,
 // and optionally pushes it to Nylas. Returns the updated suggestion.
 func ApproveSuggestion(ctx context.Context, q *sqlcdb.Queries, nylasClient NylasEventCreator, id int64, log zerolog.Logger) (sqlcdb.ActivitySuggestion, error) {
@@ -41,6 +44,18 @@ func ApproveSuggestion(ctx context.Context, q *sqlcdb.Queries, nylasClient Nylas
 
 	if suggestion.Status != "pending" {
 		return sqlcdb.ActivitySuggestion{}, fmt.Errorf("suggestion %d is %s: %w", id, suggestion.Status, ErrInvalidStatus)
+	}
+
+	// Conflict re-check: verify no blocking events now overlap this time slot.
+	conflictCount, err := q.CountBlockingEventsInRange(ctx, sqlcdb.CountBlockingEventsInRangeParams{
+		RangeEnd:   suggestion.EndTime,
+		RangeStart: suggestion.StartTime,
+	})
+	if err != nil {
+		return sqlcdb.ActivitySuggestion{}, fmt.Errorf("checking conflicts for suggestion %d: %w", id, err)
+	}
+	if conflictCount > 0 {
+		return sqlcdb.ActivitySuggestion{}, fmt.Errorf("suggestion %d: %w", id, ErrConflict)
 	}
 
 	updated, err := q.UpdateSuggestionStatus(ctx, sqlcdb.UpdateSuggestionStatusParams{

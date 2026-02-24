@@ -61,6 +61,8 @@ func ApproveSuggestion(q *sqlcdb.Queries, nylasClient action.NylasEventCreator, 
 				RespondError(w, http.StatusNotFound, "not_found", "suggestion not found", log)
 			case errors.Is(err, action.ErrInvalidStatus):
 				RespondError(w, http.StatusBadRequest, "bad_request", "only pending suggestions can be approved", log)
+			case errors.Is(err, action.ErrConflict):
+				RespondError(w, http.StatusConflict, "conflict", "this time slot now has a conflicting event", log)
 			default:
 				log.Error().Err(err).Int64("id", id).Msg("failed to approve suggestion")
 				RespondError(w, http.StatusInternalServerError, "internal_error", "failed to approve suggestion", log)

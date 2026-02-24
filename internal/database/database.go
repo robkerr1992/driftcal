@@ -44,6 +44,11 @@ func Open(dbPath string, log zerolog.Logger) (*sql.DB, error) {
 		return nil, fmt.Errorf("opening database: %w", err)
 	}
 
+	// SQLite pragmas are per-connection. Limiting the pool to a single
+	// connection ensures every query inherits WAL mode, foreign keys, etc.
+	// WAL still allows concurrent reads from other processes (Litestream).
+	db.SetMaxOpenConns(1)
+
 	if err := applyPragmas(db, false); err != nil {
 		db.Close()
 		return nil, err
