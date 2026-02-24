@@ -8,6 +8,8 @@ import (
 	"io"
 	"net/http"
 	"time"
+
+	"github.com/sethvargo/go-retry"
 )
 
 const (
@@ -94,54 +96,69 @@ func (c *Client) callAPI(ctx context.Context, systemPrompt, userPrompt string, t
 		return nil, fmt.Errorf("marshaling request: %w", err)
 	}
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.baseURL+"/v1/messages", bytes.NewReader(payload))
-	if err != nil {
-		return nil, fmt.Errorf("creating request: %w", err)
-	}
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("x-api-key", c.apiKey)
-	req.Header.Set("anthropic-version", "2023-06-01")
+	var result *GenerateResult
 
-	resp, err := c.http.Do(req)
-	if err != nil {
-		return nil, fmt.Errorf("executing request: %w", err)
-	}
-	defer resp.Body.Close()
+	b := retry.NewExponential(2 * time.Second)
+	b = retry.WithMaxRetries(3, b)
 
-	body, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
-	if err != nil {
-		return nil, fmt.Errorf("reading response: %w", err)
-	}
-
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return nil, fmt.Errorf("anthropic API error (status %d): %s", resp.StatusCode, string(body))
-	}
-
-	var messagesResp messagesResponse
-	if err := json.Unmarshal(body, &messagesResp); err != nil {
-		return nil, fmt.Errorf("decoding response: %w", err)
-	}
-
-	result := &GenerateResult{
-		RequestID:    resp.Header.Get("x-request-id"),
-		InputTokens:  messagesResp.Usage.InputTokens,
-		OutputTokens: messagesResp.Usage.OutputTokens,
-	}
-
-	// Find the tool_use block.
-	for _, block := range messagesResp.Content {
-		if block.Type == "tool_use" && block.Name == "suggest_activities" {
-			var toolInput struct {
-				Suggestions []Suggestion `json:"suggestions"`
-			}
-			if err := json.Unmarshal(block.Input, &toolInput); err != nil {
-				return nil, fmt.Errorf("parsing tool input: %w", err)
-			}
-			result.Suggestions = toolInput.Suggestions
-			break
+	err = retry.Do(ctx, b, func(ctx context.Context) error {
+		req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.baseURL+"/v1/messages", bytes.NewReader(payload))
+		if err != nil {
+			return fmt.Errorf("creating request: %w", err)
 		}
-	}
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("x-api-key", c.apiKey)
+		req.Header.Set("anthropic-version", "2023-06-01")
 
+		resp, err := c.http.Do(req)
+		if err != nil {
+			return retry.RetryableError(fmt.Errorf("executing request: %w", err))
+		}
+		defer resp.Body.Close()
+
+		body, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+		if err != nil {
+			return fmt.Errorf("reading response: %w", err)
+		}
+
+		if resp.StatusCode == 429 || resp.StatusCode >= 500 {
+			return retry.RetryableError(fmt.Errorf("anthropic API error (status %d): %s", resp.StatusCode, string(body)))
+		}
+		if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+			return fmt.Errorf("anthropic API error (status %d): %s", resp.StatusCode, string(body))
+		}
+
+		var messagesResp messagesResponse
+		if err := json.Unmarshal(body, &messagesResp); err != nil {
+			return fmt.Errorf("decoding response: %w", err)
+		}
+
+		result = &GenerateResult{
+			RequestID:    resp.Header.Get("x-request-id"),
+			InputTokens:  messagesResp.Usage.InputTokens,
+			OutputTokens: messagesResp.Usage.OutputTokens,
+		}
+
+		// Find the tool_use block.
+		for _, block := range messagesResp.Content {
+			if block.Type == "tool_use" && block.Name == "suggest_activities" {
+				var toolInput struct {
+					Suggestions []Suggestion `json:"suggestions"`
+				}
+				if err := json.Unmarshal(block.Input, &toolInput); err != nil {
+					return fmt.Errorf("parsing tool input: %w", err)
+				}
+				result.Suggestions = toolInput.Suggestions
+				break
+			}
+		}
+
+		return nil
+	})
+
+	if err != nil {
+		return nil, err
+	}
 	return result, nil
 }
 

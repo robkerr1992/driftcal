@@ -67,7 +67,7 @@ func setupRunner(t *testing.T, syncer SyncRunner, w WeatherFetcher, s Suggestion
 	prefs.Set(t.Context(), "active_hours_start", "07:00")
 	prefs.Set(t.Context(), "active_hours_end", "22:00")
 
-	runner := New(q, syncer, prefs, w, s, n, log)
+	runner := New(db, q, syncer, prefs, w, s, n, log)
 	return runner, q
 }
 

@@ -40,6 +40,7 @@ type NylasEventCreator interface {
 
 // Runner orchestrates the daily pipeline: sync → gaps → enrich → goals → suggest.
 type Runner struct {
+	db       *sql.DB
 	queries  *sqlcdb.Queries
 	syncer   SyncRunner
 	prefs    *preferences.Store
@@ -51,6 +52,7 @@ type Runner struct {
 
 // New creates a pipeline Runner with all dependencies.
 func New(
+	db *sql.DB,
 	queries *sqlcdb.Queries,
 	syncer SyncRunner,
 	prefs *preferences.Store,
@@ -60,6 +62,7 @@ func New(
 	log zerolog.Logger,
 ) *Runner {
 	return &Runner{
+		db:      db,
 		queries: queries,
 		syncer:  syncer,
 		prefs:   prefs,
@@ -205,12 +208,20 @@ func (r *Runner) stepGaps(ctx context.Context, targetDate time.Time, runID int64
 
 		computed := gap.ComputeGaps(input)
 
-		// Delete existing gaps for this date and insert fresh.
-		if err := r.queries.DeleteDailyGapsForDate(ctx, date); err != nil {
+		// Delete existing gaps and insert fresh within a transaction to
+		// prevent data loss if the process crashes between delete and insert.
+		tx, err := r.db.BeginTx(ctx, nil)
+		if err != nil {
+			return fmt.Errorf("starting gap transaction for %s: %w", date.Format("2006-01-02"), err)
+		}
+		txq := r.queries.WithTx(tx)
+
+		if err := txq.DeleteDailyGapsForDate(ctx, date); err != nil {
+			tx.Rollback()
 			return fmt.Errorf("deleting gaps for %s: %w", date.Format("2006-01-02"), err)
 		}
 		for _, g := range computed {
-			if _, err := r.queries.CreateDailyGap(ctx, sqlcdb.CreateDailyGapParams{
+			if _, err := txq.CreateDailyGap(ctx, sqlcdb.CreateDailyGapParams{
 				GapDate:          date,
 				StartTime:        g.StartTime,
 				EndTime:          g.EndTime,
@@ -221,8 +232,12 @@ func (r *Runner) stepGaps(ctx context.Context, targetDate time.Time, runID int64
 				AfterEventTitle:  toNullString(g.AfterEventTitle),
 				PipelineRunID:    sql.NullInt64{Int64: runID, Valid: true},
 			}); err != nil {
+				tx.Rollback()
 				return fmt.Errorf("creating gap for %s: %w", date.Format("2006-01-02"), err)
 			}
+		}
+		if err := tx.Commit(); err != nil {
+			return fmt.Errorf("committing gaps for %s: %w", date.Format("2006-01-02"), err)
 		}
 
 		r.log.Info().Str("date", date.Format("2006-01-02")).Int("gaps", len(computed)).Msg("pipeline: gaps computed")
