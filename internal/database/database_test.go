@@ -84,6 +84,7 @@ func TestMigrate_CreatesAllTables(t *testing.T) {
 		"recurring_goals",
 		"goal_instances",
 		"protected_blocks",
+		"oauth_states",
 	}
 
 	rows, err := db.Query("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'goose_%' AND name NOT LIKE 'sqlite_%'")
