@@ -362,7 +362,7 @@ func TestTriggerPipeline_ErrorDoesNotLeakDetails(t *testing.T) {
 	prefs.Set(t.Context(), "active_hours_start", "07:00")
 	prefs.Set(t.Context(), "active_hours_end", "22:00")
 
-	runner := pipeline.New(q,
+	runner := pipeline.New(db, q,
 		&failingSyncer{err: errors.New("secret internal detail: API key invalid")},
 		prefs, nil, &failingSuggest{}, nil, zerolog.Nop())
 

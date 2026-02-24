@@ -75,7 +75,7 @@ func New(cfg *config.Config, db *sql.DB, log zerolog.Logger) *Server {
 		if s.nylas != nil {
 			nylasCreator = s.nylas
 		}
-		s.pipeline = pipeline.New(q, s.syncer, s.prefs, weatherFetcher, s.suggestClient, nylasCreator, log)
+		s.pipeline = pipeline.New(db, q, s.syncer, s.prefs, weatherFetcher, s.suggestClient, nylasCreator, log)
 	}
 
 	// Initialize Telegram bot if configured.

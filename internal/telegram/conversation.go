@@ -49,11 +49,12 @@ func (b *Bot) handleConversationText(ctx context.Context, msg *Message, text str
 		b.convMu.Unlock()
 		return
 	}
+	step := conv.Step
 	b.convMu.Unlock()
 
 	chatID := msg.Chat.ID
 
-	switch conv.Step {
+	switch step {
 	case "label":
 		if len(text) > 100 {
 			b.sendText(ctx, chatID, EscapeMD2("Label too long (max 100 characters). Try again:"))
@@ -173,6 +174,13 @@ func (b *Bot) handleConversationCallback(ctx context.Context, cq *CallbackQuery)
 	case "days":
 		conv.Days = value
 		conv.Step = "confirm"
+		// Snapshot fields while holding the lock for the summary message.
+		label := conv.Label
+		category := conv.Category
+		duration := conv.Duration
+		timesWeek := conv.TimesWeek
+		timeOfDay := conv.TimeOfDay
+		days := conv.Days
 		b.convMu.Unlock()
 
 		summary := fmt.Sprintf("*New Goal*\n\n"+
@@ -182,12 +190,12 @@ func (b *Bot) handleConversationCallback(ctx context.Context, cq *CallbackQuery)
 			"Frequency: %dx/week\n"+
 			"Time: %s\n"+
 			"Days: %s",
-			EscapeMD2(conv.Label),
-			EscapeMD2(conv.Category),
-			conv.Duration,
-			conv.TimesWeek,
-			EscapeMD2(conv.TimeOfDay),
-			EscapeMD2(conv.Days))
+			EscapeMD2(label),
+			EscapeMD2(category),
+			duration,
+			timesWeek,
+			EscapeMD2(timeOfDay),
+			EscapeMD2(days))
 
 		kb := NewInlineKeyboard([]InlineButton{
 			{Text: "Create", CallbackData: "conv:confirm:yes"},
@@ -196,10 +204,12 @@ func (b *Bot) handleConversationCallback(ctx context.Context, cq *CallbackQuery)
 		b.sendWithKeyboard(ctx, chatID, summary, kb)
 
 	case "confirm":
+		// Snapshot the entire conversation state before unlocking.
+		snapshot := *conv
 		b.convMu.Unlock()
 
 		if value == "yes" {
-			b.createGoalFromConversation(ctx, chatID, conv)
+			b.createGoalFromConversation(ctx, chatID, &snapshot)
 		} else {
 			b.sendText(ctx, chatID, EscapeMD2("Goal creation cancelled."))
 		}
