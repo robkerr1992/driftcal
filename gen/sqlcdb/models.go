@@ -99,6 +99,11 @@ type GoalInstance struct {
 	UpdatedAt      time.Time      `json:"updated_at"`
 }
 
+type OauthState struct {
+	State     string    `json:"state"`
+	ExpiresAt time.Time `json:"expires_at"`
+}
+
 type PipelineRun struct {
 	ID                int64          `json:"id"`
 	RunDate           time.Time      `json:"run_date"`

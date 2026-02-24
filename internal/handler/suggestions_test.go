@@ -46,7 +46,8 @@ func TestListSuggestions_Empty(t *testing.T) {
 	db := database.TestDB(t)
 	q := sqlcdb.New(db)
 
-	h := ListSuggestions(q, zerolog.Nop())
+	prefs := preferences.New(q, db)
+	h := ListSuggestions(q, prefs, zerolog.Nop())
 	req := httptest.NewRequest(http.MethodGet, "/api/suggestions?date=2026-03-01", nil)
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
@@ -73,7 +74,8 @@ func TestListSuggestions_WithData(t *testing.T) {
 	date := time.Date(2026, 3, 1, 0, 0, 0, 0, time.UTC)
 	createTestSuggestion(t, q, date)
 
-	h := ListSuggestions(q, zerolog.Nop())
+	prefs := preferences.New(q, db)
+	h := ListSuggestions(q, prefs, zerolog.Nop())
 	req := httptest.NewRequest(http.MethodGet, "/api/suggestions?date=2026-03-01", nil)
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
@@ -97,7 +99,8 @@ func TestListSuggestions_DefaultDate(t *testing.T) {
 	db := database.TestDB(t)
 	q := sqlcdb.New(db)
 
-	h := ListSuggestions(q, zerolog.Nop())
+	prefs := preferences.New(q, db)
+	h := ListSuggestions(q, prefs, zerolog.Nop())
 	// No ?date param — should default to tomorrow and return 200.
 	req := httptest.NewRequest(http.MethodGet, "/api/suggestions", nil)
 	rec := httptest.NewRecorder()
@@ -112,7 +115,8 @@ func TestListSuggestions_InvalidDate(t *testing.T) {
 	db := database.TestDB(t)
 	q := sqlcdb.New(db)
 
-	h := ListSuggestions(q, zerolog.Nop())
+	prefs := preferences.New(q, db)
+	h := ListSuggestions(q, prefs, zerolog.Nop())
 	req := httptest.NewRequest(http.MethodGet, "/api/suggestions?date=bad", nil)
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, req)

@@ -64,7 +64,7 @@ func (s *Server) routes() http.Handler {
 		r.Post("/goals/{id}/instances/{instance_id}/skip", handler.SkipGoalInstance(s.queries, s.prefs, s.nylas, s.log))
 		r.Post("/goals/{id}/instances/{instance_id}/complete", handler.CompleteGoalInstance(s.queries, s.log))
 
-		r.Get("/suggestions", handler.ListSuggestions(s.queries, s.log))
+		r.Get("/suggestions", handler.ListSuggestions(s.queries, s.prefs, s.log))
 		r.Post("/suggestions/{id}/approve", handler.ApproveSuggestion(s.queries, s.nylas, s.log))
 		r.Post("/suggestions/{id}/reject", handler.RejectSuggestion(s.queries, s.log))
 		r.Post("/suggestions/generate", handler.TriggerPipeline(s.pipeline, s.log))

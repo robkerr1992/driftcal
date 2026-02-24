@@ -75,8 +75,6 @@ func New(
 
 // RunDailyPipeline executes the 5-step daily pipeline for the given target date.
 func (r *Runner) RunDailyPipeline(ctx context.Context, targetDate time.Time) error {
-	r.log.Info().Time("target_date", targetDate).Msg("pipeline: starting daily run")
-
 	// Create pipeline run record.
 	run, err := r.queries.CreatePipelineRun(ctx, sqlcdb.CreatePipelineRunParams{
 		RunDate:   targetDate,
@@ -86,14 +84,15 @@ func (r *Runner) RunDailyPipeline(ctx context.Context, targetDate time.Time) err
 		return fmt.Errorf("creating pipeline run: %w", err)
 	}
 
-	// Step 1: Sync (hard-fail).
-	if err := r.stepSync(ctx); err != nil {
-		r.failRun(ctx, run.ID, fmt.Sprintf("sync: %v", err))
-		return fmt.Errorf("pipeline step 1 (sync): %w", err)
-	}
-	r.completeStep(ctx, run.ID, "sync")
+	// Enrich logger with run context so all step logs are correlated.
+	r.log = r.log.With().
+		Int64("run_id", run.ID).
+		Str("target_date", targetDate.Format("2006-01-02")).
+		Logger()
+	r.log.Info().Msg("pipeline: starting daily run")
 
-	// Load preferences needed by multiple steps.
+	// Snapshot preferences once so all steps see consistent values even if
+	// prefs change mid-run. Loaded before sync to fail fast on missing config.
 	userTZ, err := r.prefs.Timezone(ctx)
 	if err != nil {
 		r.failRun(ctx, run.ID, fmt.Sprintf("loading timezone: %v", err))
@@ -110,6 +109,13 @@ func (r *Runner) RunDailyPipeline(ctx context.Context, targetDate time.Time) err
 		return fmt.Errorf("loading active_hours_end: %w", err)
 	}
 	energyProfile, _ := r.prefs.EnergyProfile(ctx) // OK — truly optional, zero-value is safe
+
+	// Step 1: Sync (hard-fail).
+	if err := r.stepSync(ctx); err != nil {
+		r.failRun(ctx, run.ID, fmt.Sprintf("sync: %v", err))
+		return fmt.Errorf("pipeline step 1 (sync): %w", err)
+	}
+	r.completeStep(ctx, run.ID, "sync")
 
 	// Step 2: Compute and store gaps for 3 days (hard-fail).
 	if err := r.stepGaps(ctx, targetDate, run.ID, userTZ, activeStart, activeEnd); err != nil {
@@ -152,21 +158,20 @@ func (r *Runner) stepSync(ctx context.Context) error {
 
 // Step 2: Compute and store gaps for target date + 2 more days.
 func (r *Runner) stepGaps(ctx context.Context, targetDate time.Time, runID int64, loc *time.Location, activeStartStr, activeEndStr string) error {
+	// Load protected blocks once — they're date-independent definitions.
+	protectedBlocks, err := r.queries.ListActiveProtectedBlocks(ctx)
+	if err != nil {
+		return fmt.Errorf("loading protected blocks: %w", err)
+	}
+
 	for dayOffset := 0; dayOffset < 3; dayOffset++ {
 		date := targetDate.AddDate(0, 0, dayOffset)
 		dayLocal := date.In(loc)
 
-		activeStart, err := gap.ParseHHMM(activeStartStr, dayLocal, loc)
+		rangeStart, rangeEnd, err := dateRange(date, activeStartStr, activeEndStr, loc)
 		if err != nil {
-			return fmt.Errorf("parsing active start: %w", err)
+			return fmt.Errorf("date range for %s: %w", date.Format("2006-01-02"), err)
 		}
-		activeEnd, err := gap.ParseHHMM(activeEndStr, dayLocal, loc)
-		if err != nil {
-			return fmt.Errorf("parsing active end: %w", err)
-		}
-
-		rangeStart := activeStart.UTC()
-		rangeEnd := activeEnd.UTC()
 
 		// Load blocking events.
 		events, err := r.queries.ListBlockingEventsInRange(ctx, sqlcdb.ListBlockingEventsInRangeParams{
@@ -175,11 +180,6 @@ func (r *Runner) stepGaps(ctx context.Context, targetDate time.Time, runID int64
 		})
 		if err != nil {
 			return fmt.Errorf("loading events for %s: %w", date.Format("2006-01-02"), err)
-		}
-
-		protectedBlocks, err := r.queries.ListActiveProtectedBlocks(ctx)
-		if err != nil {
-			return fmt.Errorf("loading protected blocks: %w", err)
 		}
 
 		goalInstances, err := r.queries.ListScheduledGoalInstancesInRangeWithLabel(ctx, sqlcdb.ListScheduledGoalInstancesInRangeWithLabelParams{
@@ -369,17 +369,10 @@ func (r *Runner) stepSuggest(
 
 	// Re-compute gaps for tomorrow (post-goal-placement).
 	dayLocal := targetDate.In(loc)
-	activeStart, err := gap.ParseHHMM(activeStartStr, dayLocal, loc)
+	rangeStart, rangeEnd, err := dateRange(targetDate, activeStartStr, activeEndStr, loc)
 	if err != nil {
-		return fmt.Errorf("parsing active start: %w", err)
+		return fmt.Errorf("date range for suggestions: %w", err)
 	}
-	activeEnd, err := gap.ParseHHMM(activeEndStr, dayLocal, loc)
-	if err != nil {
-		return fmt.Errorf("parsing active end: %w", err)
-	}
-
-	rangeStart := activeStart.UTC()
-	rangeEnd := activeEnd.UTC()
 
 	events, err := r.queries.ListBlockingEventsInRange(ctx, sqlcdb.ListBlockingEventsInRangeParams{
 		RangeStart: rangeStart, RangeEnd: rangeEnd,
@@ -575,6 +568,21 @@ func (r *Runner) failRun(ctx context.Context, runID int64, errMsg string) {
 	}); err != nil {
 		r.log.Error().Err(err).Int64("run_id", runID).Msg("pipeline: failed to mark run as failed")
 	}
+}
+
+// dateRange computes the active-hours UTC time range for a given date.
+func dateRange(date time.Time, activeStartStr, activeEndStr string, loc *time.Location) (start, end time.Time, err error) {
+	dayLocal := date.In(loc)
+
+	activeStart, err := gap.ParseHHMM(activeStartStr, dayLocal, loc)
+	if err != nil {
+		return time.Time{}, time.Time{}, fmt.Errorf("parsing active start: %w", err)
+	}
+	activeEnd, err := gap.ParseHHMM(activeEndStr, dayLocal, loc)
+	if err != nil {
+		return time.Time{}, time.Time{}, fmt.Errorf("parsing active end: %w", err)
+	}
+	return activeStart.UTC(), activeEnd.UTC(), nil
 }
 
 func toNullString(s string) sql.NullString {

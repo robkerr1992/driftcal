@@ -2,6 +2,7 @@ package pipeline
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 	"testing"
 	"time"
@@ -286,5 +287,146 @@ func TestPipeline_NilSuggestClient(t *testing.T) {
 	}
 	if run.Status != "completed" {
 		t.Errorf("Status = %q, want completed", run.Status)
+	}
+}
+
+func TestPipeline_NilSyncer(t *testing.T) {
+	runner, q := setupRunner(t,
+		nil, // nil syncer — sync step should be skipped
+		nil,
+		nil,
+		nil,
+	)
+
+	tomorrow := time.Now().UTC().AddDate(0, 0, 1)
+	tomorrow = time.Date(tomorrow.Year(), tomorrow.Month(), tomorrow.Day(), 0, 0, 0, 0, time.UTC)
+
+	err := runner.RunDailyPipeline(t.Context(), tomorrow)
+	if err != nil {
+		t.Fatalf("RunDailyPipeline should succeed with nil syncer: %v", err)
+	}
+
+	run, err := q.GetLatestPipelineRun(t.Context())
+	if err != nil {
+		t.Fatalf("GetLatestPipelineRun: %v", err)
+	}
+	if run.Status != "completed" {
+		t.Errorf("Status = %q, want completed", run.Status)
+	}
+	// Sync step is skipped but all subsequent steps still complete.
+	if !run.LastCompletedStep.Valid || run.LastCompletedStep.String != "suggest" {
+		t.Errorf("LastCompletedStep = %v, want suggest", run.LastCompletedStep)
+	}
+}
+
+func TestPipeline_NilWeatherClient(t *testing.T) {
+	runner, q := setupRunner(t,
+		&mockSyncer{},
+		nil, // nil weather client — enrichment step should be skipped
+		nil,
+		nil,
+	)
+
+	tomorrow := time.Now().UTC().AddDate(0, 0, 1)
+	tomorrow = time.Date(tomorrow.Year(), tomorrow.Month(), tomorrow.Day(), 0, 0, 0, 0, time.UTC)
+
+	err := runner.RunDailyPipeline(t.Context(), tomorrow)
+	if err != nil {
+		t.Fatalf("RunDailyPipeline should succeed with nil weather client: %v", err)
+	}
+
+	run, err := q.GetLatestPipelineRun(t.Context())
+	if err != nil {
+		t.Fatalf("GetLatestPipelineRun: %v", err)
+	}
+	if run.Status != "completed" {
+		t.Errorf("Status = %q, want completed", run.Status)
+	}
+	// Enrichment is skipped but pipeline still reaches suggest.
+	if !run.LastCompletedStep.Valid || run.LastCompletedStep.String != "suggest" {
+		t.Errorf("LastCompletedStep = %v, want suggest", run.LastCompletedStep)
+	}
+}
+
+func TestPipeline_GapTransactionAtomicity(t *testing.T) {
+	suggestions := []suggest.Suggestion{
+		{GapNumber: 1, Title: "Walk", Description: "d", Category: "outdoor",
+			EnergyLevel: "low", EstimatedCost: "free", Location: "park", Reasoning: "r"},
+	}
+
+	runner, q := setupRunner(t,
+		&mockSyncer{},
+		nil,
+		&mockSuggest{result: &suggest.GenerateResult{Suggestions: suggestions, RequestID: "req-atom"}},
+		nil,
+	)
+
+	tomorrow := time.Now().UTC().AddDate(0, 0, 1)
+	tomorrow = time.Date(tomorrow.Year(), tomorrow.Month(), tomorrow.Day(), 0, 0, 0, 0, time.UTC)
+
+	// Pre-seed stale gaps for the target date so the pipeline must delete and
+	// re-insert them as part of the atomic transaction. pipeline_run_id is
+	// left NULL because no prior run record exists; we verify post-run that
+	// all surviving gaps belong to the new run (i.e. the stale rows are gone).
+	for i := 0; i < 3; i++ {
+		base := tomorrow.Add(time.Duration(i) * time.Hour)
+		_, err := q.CreateDailyGap(t.Context(), sqlcdb.CreateDailyGapParams{
+			GapDate:         tomorrow,
+			StartTime:       base,
+			EndTime:         base.Add(30 * time.Minute),
+			DurationMinutes: 30,
+			TimeOfDay:       "morning",
+			DurationBucket:  "short",
+			PipelineRunID:   sql.NullInt64{}, // no run yet — stale rows have no run
+		})
+		if err != nil {
+			t.Fatalf("pre-seeding gap %d: %v", i, err)
+		}
+	}
+
+	// Confirm pre-seeded rows exist.
+	before, err := q.ListDailyGapsByDate(t.Context(), tomorrow)
+	if err != nil {
+		t.Fatalf("ListDailyGapsByDate before run: %v", err)
+	}
+	if len(before) != 3 {
+		t.Fatalf("expected 3 pre-seeded gaps, got %d", len(before))
+	}
+
+	// Run the pipeline — it should atomically delete the stale gaps and
+	// insert the freshly computed ones.
+	err = runner.RunDailyPipeline(t.Context(), tomorrow)
+	if err != nil {
+		t.Fatalf("RunDailyPipeline failed: %v", err)
+	}
+
+	// Fetch the new pipeline run to verify the run_id on the replaced gaps.
+	run, err := q.GetLatestPipelineRun(t.Context())
+	if err != nil {
+		t.Fatalf("GetLatestPipelineRun: %v", err)
+	}
+
+	after, err := q.ListDailyGapsByDate(t.Context(), tomorrow)
+	if err != nil {
+		t.Fatalf("ListDailyGapsByDate after run: %v", err)
+	}
+
+	// There must be at least one gap (the active-hours window always yields
+	// a full-day gap when no events are present).
+	if len(after) == 0 {
+		t.Fatal("expected at least one gap after pipeline run")
+	}
+
+	// Every surviving gap must belong to the current run — none of the stale
+	// rows (which had a NULL pipeline_run_id) should remain, proving the
+	// delete+insert was atomic rather than an additive append.
+	for _, g := range after {
+		if !g.PipelineRunID.Valid {
+			t.Errorf("gap %d has no pipeline_run_id — stale pre-seeded row was not replaced", g.ID)
+			continue
+		}
+		if g.PipelineRunID.Int64 != run.ID {
+			t.Errorf("gap %d has pipeline_run_id %d, want %d", g.ID, g.PipelineRunID.Int64, run.ID)
+		}
 	}
 }

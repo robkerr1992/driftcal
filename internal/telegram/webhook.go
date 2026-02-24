@@ -76,7 +76,18 @@ func WebhookHandler(bot *Bot) http.HandlerFunc {
 		// We intentionally use context.Background() (inside handleUpdate) rather
 		// than r.Context(), because the request context is cancelled when this
 		// handler returns 200.
-		go bot.handleUpdate(update)
+		select {
+		case bot.webhookSem <- struct{}{}:
+			go func() {
+				defer func() { <-bot.webhookSem }()
+				bot.handleUpdate(update)
+			}()
+		default:
+			// All handler slots are busy — shed load.
+			bot.log.Warn().Msg("telegram: webhook handler at capacity, dropping update")
+			w.WriteHeader(http.StatusServiceUnavailable)
+			return
+		}
 
 		w.WriteHeader(http.StatusOK)
 	}
