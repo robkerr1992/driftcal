@@ -29,7 +29,7 @@ func (s *Server) routes() http.Handler {
 	r.Get("/health", handler.Health(s.db, s.startTime, s.log))
 
 	// Unauthenticated API routes (browser redirect + webhook HMAC)
-	r.Get("/api/accounts/callback", handler.AccountCallback(s.nylas, s.cfg.BaseURL, s.queries, s.log))
+	r.Get("/api/accounts/callback", handler.AccountCallback(s.nylas, s.cfg.BaseURL, s.queries, s.prefs, s.log))
 	if s.cfg.NylasWebhookSecret != "" {
 		r.Post("/api/webhooks/nylas", handler.NylasWebhook(s.cfg.NylasWebhookSecret, s.nylas, s.queries, s.log))
 	}

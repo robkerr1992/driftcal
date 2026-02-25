@@ -328,6 +328,67 @@ func TestCreateEvent_Error(t *testing.T) {
 	}
 }
 
+func TestCreateCalendar_Success(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			t.Errorf("method = %s, want POST", r.Method)
+		}
+		if r.URL.Path != "/v3/grants/grant-abc/calendars" {
+			t.Errorf("path = %s, want /v3/grants/grant-abc/calendars", r.URL.Path)
+		}
+		if auth := r.Header.Get("Authorization"); auth != "Bearer api-key" {
+			t.Errorf("Authorization = %q, want %q", auth, "Bearer api-key")
+		}
+
+		var body CreateCalendarRequest
+		json.NewDecoder(r.Body).Decode(&body)
+		if body.Name != "DriftCal" {
+			t.Errorf("Name = %q, want DriftCal", body.Name)
+		}
+
+		json.NewEncoder(w).Encode(struct {
+			Data Calendar `json:"data"`
+		}{
+			Data: Calendar{ID: "cal-new", Name: "DriftCal"},
+		})
+	}))
+	defer srv.Close()
+
+	c := NewWithBaseURL("client-123", "api-key", srv.URL)
+	cal, err := c.CreateCalendar(context.Background(), "grant-abc", CreateCalendarRequest{
+		Name:        "DriftCal",
+		Description: "Auto-created by DriftCal",
+	})
+	if err != nil {
+		t.Fatalf("CreateCalendar failed: %v", err)
+	}
+	if cal.ID != "cal-new" {
+		t.Errorf("ID = %q, want cal-new", cal.ID)
+	}
+	if cal.Name != "DriftCal" {
+		t.Errorf("Name = %q, want DriftCal", cal.Name)
+	}
+}
+
+func TestCreateCalendar_Error(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusForbidden)
+		w.Write([]byte(`{"error":"forbidden"}`))
+	}))
+	defer srv.Close()
+
+	c := NewWithBaseURL("client-123", "api-key", srv.URL)
+	_, err := c.CreateCalendar(context.Background(), "grant-abc", CreateCalendarRequest{
+		Name: "DriftCal",
+	})
+	if err == nil {
+		t.Fatal("expected error for 403 response")
+	}
+	if !strings.Contains(err.Error(), "403") {
+		t.Errorf("error should mention status code, got: %v", err)
+	}
+}
+
 func TestListEvents_PaginationLimit(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		// Always return a next cursor to trigger pagination limit

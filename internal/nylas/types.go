@@ -61,6 +61,12 @@ type listResponse[T any] struct {
 	NextCursor string `json:"next_cursor"`
 }
 
+// CreateCalendarRequest is the body sent to create a calendar on a grant.
+type CreateCalendarRequest struct {
+	Name        string `json:"name"`
+	Description string `json:"description,omitempty"`
+}
+
 // CreateEventRequest is the body sent to create a calendar event.
 type CreateEventRequest struct {
 	Title       string   `json:"title"`

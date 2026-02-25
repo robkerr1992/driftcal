@@ -144,6 +144,18 @@ func (c *Client) CreateEvent(ctx context.Context, grantID, calendarID string, re
 	return &resp.Data, nil
 }
 
+// CreateCalendar creates a new calendar on the specified grant.
+func (c *Client) CreateCalendar(ctx context.Context, grantID string, req CreateCalendarRequest) (*Calendar, error) {
+	path := fmt.Sprintf("/v3/grants/%s/calendars", grantID)
+	var resp struct {
+		Data Calendar `json:"data"`
+	}
+	if err := c.post(ctx, path, req, &resp); err != nil {
+		return nil, fmt.Errorf("creating calendar: %w", err)
+	}
+	return &resp.Data, nil
+}
+
 // get performs an authenticated GET request and decodes the JSON response.
 func (c *Client) get(ctx context.Context, path string, params url.Values, dest any) error {
 	u := c.baseURL + path

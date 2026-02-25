@@ -18,6 +18,7 @@ import (
 
 	"github.com/robkerr1992/driftcal/gen/sqlcdb"
 	"github.com/robkerr1992/driftcal/internal/nylas"
+	"github.com/robkerr1992/driftcal/internal/preferences"
 )
 
 const stateMaxAge = 10 * time.Minute
@@ -27,7 +28,10 @@ type NylasAccountService interface {
 	AuthURL(redirectURI, provider, state string) string
 	ExchangeCode(ctx context.Context, code, redirectURI string) (*nylas.TokenResponse, error)
 	ListCalendars(ctx context.Context, grantID string) ([]nylas.Calendar, error)
+	CreateCalendar(ctx context.Context, grantID string, req nylas.CreateCalendarRequest) (*nylas.Calendar, error)
 }
+
+const driftCalCalendarName = "DriftCal"
 
 func generateState() (string, error) {
 	b := make([]byte, 16)
@@ -95,7 +99,8 @@ func ConnectAccount(nc NylasAccountService, baseURL string, q *sqlcdb.Queries, l
 
 // AccountCallback handles the OAuth redirect from Nylas.
 // It exchanges the code, creates the account and calendars, and returns them.
-func AccountCallback(nc NylasAccountService, baseURL string, q *sqlcdb.Queries, log zerolog.Logger) http.HandlerFunc {
+// On the first connected account, it auto-creates a dedicated "DriftCal" calendar.
+func AccountCallback(nc NylasAccountService, baseURL string, q *sqlcdb.Queries, prefs *preferences.Store, log zerolog.Logger) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		code := r.URL.Query().Get("code")
 		if code == "" {
@@ -159,6 +164,47 @@ func AccountCallback(nc NylasAccountService, baseURL string, q *sqlcdb.Queries, 
 				continue
 			}
 			calendars = append(calendars, cal)
+		}
+
+		// Auto-create a dedicated DriftCal calendar on the first connected account.
+		// Best-effort: failures log warnings but don't break the OAuth callback.
+		existingGrantID, _ := prefs.Get(ctx, "nylas_grant_id")
+		if existingGrantID == "" {
+			nylasCal, err := nc.CreateCalendar(ctx, token.GrantID, nylas.CreateCalendarRequest{
+				Name:        driftCalCalendarName,
+				Description: "Auto-created by DriftCal for scheduling suggestions and goals",
+			})
+			if err != nil {
+				log.Warn().Err(err).Str("grant_id", token.GrantID).Msg("failed to create DriftCal calendar on Nylas")
+			} else {
+				dbCal, err := q.CreateCalendar(ctx, sqlcdb.CreateCalendarParams{
+					AccountID:       account.ID,
+					NylasCalendarID: nylasCal.ID,
+					Name:            nylasCal.Name,
+				})
+				if err != nil {
+					log.Warn().Err(err).Str("nylas_calendar_id", nylasCal.ID).Msg("failed to save DriftCal calendar to DB")
+				} else {
+					if err := q.UpdateCalendarFlags(ctx, sqlcdb.UpdateCalendarFlagsParams{
+						ID:         dbCal.ID,
+						IsBlocking: false,
+						IsActive:   true,
+					}); err != nil {
+						log.Warn().Err(err).Int64("calendar_id", dbCal.ID).Msg("failed to set DriftCal calendar flags")
+					} else {
+						dbCal.IsBlocking = false
+					}
+
+					if err := prefs.SetMany(ctx, map[string]string{
+						"nylas_grant_id":    token.GrantID,
+						"nylas_calendar_id": nylasCal.ID,
+					}); err != nil {
+						log.Warn().Err(err).Msg("failed to set DriftCal calendar preferences")
+					}
+
+					calendars = append(calendars, dbCal)
+				}
+			}
 		}
 
 		RespondJSON(w, http.StatusCreated, map[string]any{
